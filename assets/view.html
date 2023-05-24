@@ -1,0 +1,23 @@
+{% extends "challenge.html" %}
+
+{% block description %}
+    <!-- jinja variable for the challenge description -->
+    {{ challenge.html }}
+
+    <!-- code runner section -->
+    <div class="row">
+        <div class="col-12 form-group">
+            <span>Enter your code here:</span>
+            <textarea id="coderunner" class="challenge-input form-control form-group" type="text" rows="15"></textarea>
+            <span>Output:</span>
+            <textarea id="coderunner-output" class="challenge-input form-control form-group" type="text" rows="15" readonly></textarea>
+            <span>Errors:</span>
+            <textarea id="coderunner-errors" class="challenge-input form-control form-group" type="text" rows="5" readonly></textarea>
+            <button class="btn btn-md btn-outline-secondary float-right" onclick="run_code()">Run Code</button>
+        </div>
+    </div>
+
+    <!-- dif to insert codesubflags and attached hints -->
+    <div id="codesubflags" name="codesubflags"> </div>
+    
+{% endblock %}
