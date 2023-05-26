@@ -15,6 +15,7 @@ from CTFd.models import (
 
 import re
 import requests
+import os 
 
 from CTFd.utils.uploads import delete_file #to delete challenge files
 from CTFd.utils.decorators import admins_only, authed_only
@@ -460,8 +461,7 @@ class Solve(Resource):
             return {"success": True, "data": {"message": "Codesubflag solved", "solved": True}}  
 
 def getContents(fileToConvert):
-    # current directory is CTFd/plugins/CTFD-Programming-Plugin
-    fullpath = "/opt/CTFd/CTFd/plugins/codesubflags/" + fileToConvert
+    fullpath = os.path.join(os.path.dirname(__file__), fileToConvert)
     # get contents and convert to string
     data = "";
     with open(fullpath, 'r') as file:
@@ -481,21 +481,12 @@ class Run(Resource):
     # user has to be authentificated to call this endpoint
     @authed_only
     def post(self, challenge_id):
-        print("FUCKING WORK")
-        print(challenge_id)
-        print("\n\n\n")
         try:
             data = request.get_json()
         except Exception as e:
-            print(e)
             return {"success": False, "data": {"message": e}}
-        print(data)
 
         apiroute = "https://emkc.org/api/v2/piston/execute"
-        langLookup = {
-            "python3": "3.10.0",
-            "java": "15.0.2"
-        }
         lang = "python3"
 
         submission = data["submission"].strip()
@@ -505,11 +496,11 @@ class Run(Resource):
             r = requests.post(
                 str(apiroute),
                 json={
-                    "language": lang,
-                    "version": langLookup[lang],
+                    "language": "python3",
+                    "version": "3.10.0",
                     "files": [
                         {
-                            "name": "main.py",
+                            "name": "SafeCracker.py",
                             "content": submission
                         },
                         {
@@ -518,6 +509,7 @@ class Run(Resource):
                             "content": getContents("Safe.py")
                         }
                     ],
+                    "run_timeout": 5000,
                     "stdin": "",
                     "args": [],
                 },
@@ -531,6 +523,18 @@ class Run(Resource):
             print("Error: " + str(r.status_code))
             print(r.json())
             return {"success": False, "data": {"message": "Non 200 code returned. Talk to an admin."}}
+
+@codesubflags_namespace.route("/get/<challenge_id>")
+class Get(Resource):
+    """
+    The Purpose of this API Endpoint is to allow participants to get the starting code
+    """
+
+    # user has to be authentificated to call this endpoint
+    @authed_only
+    def get(self, challenge_id):
+        # get the challenge data from the database
+        return {"success": True, "data": {"message": getContents("SafeCracker.py")}}
 
 def load(app):
     upgrade()

@@ -13,6 +13,8 @@ CTFd._internal.challenge.postRender = function() {
     assign_hint_ids();
     // insert the codesubflags into the view
     insert_codesubflags();
+    // get template
+    get_code_template();
 }
 
 // assigns ids to the original html hint element
@@ -118,11 +120,44 @@ function insert_codesubflags(){
     });
 }
 
+function get_code_template() {
+    // post to /api/v1/codesubflags/get/${challenge_id}
+    const challenge_id = parseInt(CTFd.lib.$('#challenge-id').val())
+
+    CTFd.fetch(`/api/v1/codesubflags/get/${challenge_id}`, {
+      method: "GET"
+    })
+    .then((response) => response.json())
+    .then((data) => {
+        data = data.data.message;
+        const editor = CodeMirror.fromTextArea(document.getElementById("coderunner"), {
+            lineNumbers: true,
+            mode: "python",
+            indentUnit: 4,
+            indentWithTabs: true,
+            readOnly: false
+        });
+        editor.save();
+        editor.setValue(data);
+        setTimeout(() => {
+            editor.refresh();
+            editor.focus();
+            // set cursor to end
+            editor.setCursor(editor.lineCount(), 0);
+        }, 100);
+        window.editor = editor;
+    });
+}
+
 function run_code() {
     // button with post request to /api/codesubflags/run
     // calls the api endpoint to attach a hint to a codesubflag
     const challenge_id = parseInt(CTFd.lib.$('#challenge-id').val())
-    const submission = CTFd.lib.$('#coderunner').val()
+    // const submission = CTFd.lib.$('#coderunner').val()
+    // get submission from editor
+    const editor = window.editor;
+    editor.save();
+    const submission = editor.getValue();
 
     const body = {
         challenge_id: challenge_id,
@@ -142,6 +177,10 @@ function run_code() {
         $('#coderunner-output').html(data.output)
         // error
         $("#coderunner-errors").html(data.stderr)
+        // check for sigkil
+        if (data.signal == "SIGKILL") {
+            $("#coderunner-errors").html("Your code was killed because it took more than 5 seconds to execute. Please optimize your code.")
+        }
     });
 }
 
