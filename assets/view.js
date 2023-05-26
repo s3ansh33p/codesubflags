@@ -170,16 +170,13 @@ function run_code() {
     })
     .then((response) => response.json())
     .then((data) => {
-        console.log(data)
-        console.log(data.data)
         data = data.data.run;
-        console.log(data)
         $('#coderunner-output').html(data.output)
         // error
         $("#coderunner-errors").html(data.stderr)
         // check for sigkil
-        if (data.signal == "SIGKILL") {
-            $("#coderunner-errors").html("Your code was killed because it took more than 5 seconds to execute. Please optimize your code.")
+        if (data.signal == "SIGKILL" && data.stderr == "" && data.output == "") {
+            $("#coderunner-errors").html("Your code may have timed out. Please try again. (max execution time of 5 seconds)")
         }
     });
 }
