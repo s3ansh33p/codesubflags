@@ -6,13 +6,13 @@ import time
 # Safe object
 #****************************************************************************
 class Safe:
-    def __init__(self, num_digits=4):
-        self.num_digits = num_digits
+    def __init__(self):
+        self.num_digits = 4
         self.start_time = None
         self.crack_time = None
         self.legal_combinations = []
         self._generate_combinations()
-        self.combination = self._set_combination()
+        self.__combination = self._set_combination()
         self.cracked = asyncio.Condition()
         
         # The following are arrays used in the benchmark algorithms
@@ -23,7 +23,7 @@ class Safe:
 
     async def check_combination(self, attempt):
         async with self.cracked:
-            if self.combination == attempt and self.start_time is not None:
+            if self.__combination == attempt and self.start_time is not None:
                 self.crack_time = time.time() - self.start_time
                 self.cracked.notify_all()
                 return True
@@ -32,14 +32,14 @@ class Safe:
     async def _change_combination(self, interval = 1):
         while True:
             await asyncio.sleep(interval)
-            self.combination = random.choice(self.legal_combinations) # type: ignore
+            self.__combination = random.choice(self.legal_combinations) # type: ignore
             
     async def run_safe(self, interval = 1, set_combination = None):
         self.crack_time = None
         self.start_time = time.time()
 
         if set_combination is not None and set_combination in self.legal_combinations:
-            self.combination = set_combination
+            self.__combination = set_combination
 
         task = asyncio.create_task(self._change_combination(interval))
         async with self.cracked:
@@ -62,7 +62,7 @@ class Safe:
 
     def reset_and_set_combination(self):
         self.reset()
-        self.combination = self._set_combination()
+        self.__combination = self._set_combination()
 
     #**************************************************************************
     # Benchmark Algorithms
@@ -76,7 +76,7 @@ class Safe:
             combination = random.randint(0, 10 ** self.num_digits)
             cracked = await self.check_combination(combination)
             if cracked:
-                print(f"RANDOM algorithm with {count} attempts" + f" took {self.crack_time:.8f} seconds")
+                print(f"Cracked the safe using RANDOM algorithm with {count} attempts" + f". It took {self.crack_time:.8f} seconds")
                 break
             count += 1
 
@@ -85,7 +85,7 @@ class Safe:
         for combination in range(0, 10 ** self.num_digits):
             cracked = await self.check_combination(combination)
             if cracked:
-                print(f"LOOP algorithm with {combination} attempts" + f" took {self.crack_time:.8f} seconds")
+                print(f"Cracked the safe using LOOP algorithm with {combination} attempts" + f". It took {self.crack_time:.8f} seconds")
                 break
 
     # Level 3: Brute force with odd numbers
@@ -96,7 +96,7 @@ class Safe:
             count += 1
             cracked = await self.check_combination(combination)
             if cracked:
-                print(f"ODDS algorithm with {count} attempts" + f" took {self.crack_time:.8f} seconds")
+                self.print_result(count, "Secret Algorithm 4")
                 break
 
     # Level 3: Brute force with 6 in one of the digits
@@ -107,7 +107,7 @@ class Safe:
             count += 1
             cracked = await self.check_combination(combination)
             if cracked:
-                print(f"SIXES algorithm with {count} attempts" + f" took {self.crack_time:.8f} seconds")
+                self.print_result(count, "Secret Algorithm 5")
                 break
 
     # Level 4: Brute force with 6 in one of the digits and odd numbers
@@ -117,13 +117,14 @@ class Safe:
         count = 0
         for combination in self.legal_combinations:
             count += 1
-            if count % 4 == 0:
-                await asyncio.sleep(0)
             cracked = await self.check_combination(combination)
             if cracked:
-                print(f"SIXES ODDS algorithm with {count} attempts" + f" took {self.crack_time:.8f} seconds")
+                self.print_result(count, "Secret Algorithm 6")
                 break
 
+    def print_result(self, num_attempts, algorithm):
+        print(f"Cracked the safe using {algorithm} algorithm with {num_attempts} attempts." + f" It took {self.crack_time:.8f} seconds")
+           
     #**************************************************************************
     # Benchmark Pre-Processing Arrays (Hashing)
     # The following are pregenerated arrays for the benchmark algorithms
@@ -177,7 +178,7 @@ class Safe:
         ]
 
         for i in range(num_iterations):        
-            print(" ====================== Iteration: " + str(i) + f" | KEY = {self.combination} ======================")
+            print(" ====================== Iteration: " + str(i+1) + f" | KEY = {self.__combination} ======================")
             
             for j in range(num_algorithms):
                 safe_task = asyncio.create_task(self.run_safe(100))
@@ -189,11 +190,14 @@ class Safe:
 
                 await asyncio.gather(safe_task, cracker_task)
 
-                crack_time_array[j] += self.crack_time # type: ignore
+                if j == 0:
+                    crack_time_array[j] += self.crack_time # type: ignore
+                else:
+                    crack_time_array[j] += self.crack_time * 1.2 # type: ignore
         
                 self.reset()
             # Print the fastest algorithm for each iteration
-            print(f"Fastest algorithm for iteration {i}: {algorithms[crack_time_array.index(min(crack_time_array))].__name__}")
+            # print(f"Fastest algorithm for iteration {i}: {algorithms[crack_time_array.index(min(crack_time_array))].__name__}")
             self.reset_and_set_combination()
 
         average_time_array = [crack_time / num_iterations for crack_time in crack_time_array]
@@ -203,11 +207,14 @@ class Safe:
         for algorithm in algorithms:
             self.compare_speeds(average_time_array[0], average_time_array[algorithms.index(algorithm)], algorithm.__name__)
 
-        # if the team algorithm is the fastest, print the safe code with a congrats message
-        if average_time_array[0] == min(average_time_array):
-            print("\nCongratulations! Your algorithm is the fastest!")
-            print(f"The combination is {self.combination}. The contents of the safe is yours!")
-
     def compare_speeds(self, team_avg, algorithm_avg, algorithm_name):
+        flagLookup = {
+            "crack_combination_random" : "ATR{R4ND0M_1S_4W3S0M3}",
+            "crack_combination_loop" : "ATR{L00P_1T_1S}",
+            "crack_combination_odds" : "ATR{0DD5_0DD5_0DD5}",
+            "crack_combination_sixes" : "ATR{S1X3S_1N_4_R0W}",
+            "crack_combination_sixes_odds" : "Congratulations! Your algorithm is the fastest! The combination is 6969. The contents of the safe is yours!"
+        }
+
         if(team_avg < algorithm_avg):
-            print(f"Your algorithm beat the {algorithm_name} algorithm {algorithm_avg / team_avg :.2f} times faster")
+            print(f"Your algorithm beat the {algorithm_name} algorithm {algorithm_avg / team_avg :.2f} times faster " + flagLookup[algorithm_name] + "\n")
