@@ -467,9 +467,9 @@ def getContents(fileToConvert):
     with open(fullpath, 'r') as file:
         data = file.read()
         # remove all comments
-        data = re.sub(r'#.*', '', data)
+        # data = re.sub(r'#.*', '', data)
         # remove all blank lines
-        data = re.sub(r'\n\s*\n', '\n', data)
+        # data = re.sub(r'\n\s*\n', '\n', data)
     return data   
 
 @codesubflags_namespace.route("/run/<challenge_id>")
