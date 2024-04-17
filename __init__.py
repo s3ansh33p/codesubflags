@@ -554,7 +554,7 @@ class Run(Resource):
                     return {"success": False, "data": {"message": "Challenge is not visible"}}
 
                 if challenge.state == "locked":
-                    return {"success": False, "data": {"message": "Challenge is locked"}
+                    return {"success": False, "data": {"message": "Challenge is locked"}}
 
                 # skip requirements for now
 
@@ -579,9 +579,9 @@ class Run(Resource):
                         clear_standings()
                         clear_challenges()
                     else:
-                        return {"success": False, "data": {"message": "CTF is over. Talk to an admin."}
+                        return {"success": False, "data": {"message": "CTF is over. Talk to an admin."}}
                 else:
-                    return {"success": False, "data": {"message": "Already solved."}
+                    return {"success": False, "data": {"message": "Already solved."}}
 
             return {"success": True, "data": r.json()}
         else:
