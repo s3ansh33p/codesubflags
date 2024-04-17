@@ -18,12 +18,14 @@ import requests
 import os 
 
 from CTFd.utils.uploads import delete_file #to delete challenge files
-from CTFd.utils.decorators import admins_only, authed_only
+from CTFd.utils.dates import ctf_ended, ctf_paused, ctftime
+from CTFd.utils.decorators import admins_only, authed_only, during_ctf_time_only
+from CTFd.utils.decorators.visibility import check_challenge_visibility
 from CTFd.plugins import register_plugin_assets_directory
 from CTFd.plugins.challenges import CHALLENGE_CLASSES, BaseChallenge
 from CTFd.plugins.migrations import upgrade
 from CTFd.api import CTFd_API_v1
-from CTFd.utils.config import is_teams_mode
+from CTFd.utils import config, get_config
 from CTFd.utils.user import get_current_team, get_current_user
 from datetime import datetime
 
@@ -480,6 +482,8 @@ class Run(Resource):
 
     # user has to be authentificated to call this endpoint
     @authed_only
+    @during_ctf_time_only
+    @check_challenge_visibility
     def post(self, challenge_id):
         try:
             data = request.get_json()
@@ -492,6 +496,21 @@ class Run(Resource):
         submission = data["submission"].strip()
         # instance_id = submission
 
+        if (challenge_id.isdigit() == False):
+            return {"success": False, "data": {"message": "Invalid challenge id."}}
+
+        if ctf_paused():
+            return (
+                {
+                    "success": True,
+                    "data": {
+                        "status": "paused",
+                        "message": "{} is paused".format(config.ctf_name()),
+                    },
+                },
+                403,
+            )
+
         try:
             r = requests.post(
                 str(apiroute),
@@ -500,13 +519,13 @@ class Run(Resource):
                     "version": "3.10.0",
                     "files": [
                         {
-                            "name": "SafeCracker.py",
+                            "name": "solve.py",
                             "content": submission
                         },
                         {
-                            "name": "Safe.py",
+                            "name": "input.txt",
                             # "content": "def solve():\n\tprint(\"ATR{TEST}\")"
-                            "content": getContents("Safe.py")
+                            "content": getContents(challenge_id + "/input.txt")
                         }
                     ],
                     "run_timeout": 5000,
@@ -518,6 +537,52 @@ class Run(Resource):
             return {"success": False, "data": {"message": "Challenge oracle is not available. Talk to an admin."}}
 
         if r.status_code == 200:
+            # check if the output is correct, if so, also mark flag as complete
+            output = r.json()["run"]["stdout"].strip()
+            check_output = getContents(challenge_id + "/output.txt").strip()
+            if output == check_output:
+                # based on https://github.com/CTFd/CTFd/blob/030f31dd345ab19acfb7c8de89bcdfd898c016e0/CTFd/api/v1/challenges.py#L492
+                user = get_current_user()
+                team = get_current_team()
+
+                if config.is_teams_mode() and team is None:
+                    return {"success": False, "data": {"message": "Team Error. Talk to an admin."}}
+
+                challenge = Challenges.query.filter_by(id=challenge_id).first_or_404()
+
+                if challenge.state == "hidden":
+                    return {"success": False, "data": {"message": "Challenge is not visible"}}
+
+                if challenge.state == "locked":
+                    return {"success": False, "data": {"message": "Challenge is locked"}
+
+                # skip requirements for now
+
+                # skip auto-bruteforce check for now
+
+                solves = Solves.query.filter_by(
+                    account_id=user.account_id, challenge_id=challenge_id
+                ).first()
+
+                # skip max attempts
+                if not solves:
+                    # already know correct
+                    if ctftime() or current_user.is_admin():
+                        solve = Solves(
+                            user_id=user.id,
+                            team_id=team.id if config.is_teams_mode() else None,
+                            challenge_id=challenge_id,
+                            provided=submission,
+                        )
+                        db.session.add(solve)
+                        db.session.commit()
+                        clear_standings()
+                        clear_challenges()
+                    else:
+                        return {"success": False, "data": {"message": "CTF is over. Talk to an admin."}
+                else:
+                    return {"success": False, "data": {"message": "Already solved."}
+
             return {"success": True, "data": r.json()}
         else:
             print("Error: " + str(r.status_code))
@@ -533,8 +598,11 @@ class Get(Resource):
     # user has to be authentificated to call this endpoint
     @authed_only
     def get(self, challenge_id):
-        # get the challenge data from the database
-        return {"success": True, "data": {"message": getContents("SafeCracker.py")}}
+        # instead verify that challenge_id is a valid by if is integer
+        # hopefully this isn't a vulnerability... 
+        if (challenge_id.isdigit() == False):
+            return {"success": False, "data": {"message": "Invalid challenge id."}}
+        return {"success": True, "data": {"message": getContents(challenge_id + "/template.py")}}
 
 def load(app):
     upgrade()
