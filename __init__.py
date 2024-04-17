@@ -17,6 +17,7 @@ import re
 import requests
 import os 
 
+from CTFd.cache import clear_challenges, clear_standings
 from CTFd.utils.uploads import delete_file #to delete challenge files
 from CTFd.utils.dates import ctf_ended, ctf_paused, ctftime
 from CTFd.utils.decorators import admins_only, authed_only, during_ctf_time_only
