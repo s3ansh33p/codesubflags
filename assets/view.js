@@ -8,7 +8,9 @@ CTFd._internal.challenge.preRender = function() {};
 // TODO: Remove in CTFd v4.0
 CTFd._internal.challenge.render = null;
 
-CTFd._internal.challenge.postRender = function() {
+CTFd._internal.challenge.postRender = async function() {
+    // 100 ms delay to ensure that the original hidden values are loaded
+    await new Promise((resolve) => setTimeout(resolve, 100));
     // assigns ids to the original html hint element 
     assign_hint_ids();
     // insert the codesubflags into the view
