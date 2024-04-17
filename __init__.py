@@ -564,6 +564,8 @@ class Run(Resource):
                     account_id=user.account_id, challenge_id=challenge_id
                 ).first()
 
+                dataObj = r.json()
+
                 # skip max attempts
                 if not solves:
                     # already know correct
@@ -579,9 +581,11 @@ class Run(Resource):
                         clear_standings()
                         clear_challenges()
                     else:
-                        return {"success": False, "data": {"message": "CTF is over. Talk to an admin."}}
+                        dataObj["message"] = "CTF is over. Talk to an admin."
+                        return {"success": False, "data": dataObj}
                 else:
-                    return {"success": False, "data": {"message": "Already solved."}}
+                    dataObj["message"] = "Already solved"
+                    return {"success": False, "data": dataObj}
 
             return {"success": True, "data": r.json()}
         else:
