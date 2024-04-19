@@ -181,7 +181,7 @@ function run_code() {
             $("#coderunner-errors").html("Your code may have timed out. Please try again. (max execution time of 5 seconds)")
         }
         if (data.status) {
-            // I'm going to be really lazy and build the class callback myself
+            // I'm going to be really lazy and build the class callback myself instead of looking into alpine :)
             const el = document.querySelector("#challenge .row.notification-row");
             const classMap = {
                 "correct": "alert-success",
@@ -196,6 +196,14 @@ function run_code() {
             const statusClass = classMap[data.status];
             const statusText = textMap[data.status];
             el.children[0].innerHTML = `<div class="alert text-center w-100 mt-3 ${statusClass}">${statusText}</div>`;
+            // check if success
+            if (data.status == "correct") {
+                document.querySelectorAll(".challenge-button").forEach((el) => {
+                    if (el.value == challenge_id) {
+                        el.classList.add("challenge-solved");
+                    }
+                });
+            }
         }
     });
 }
