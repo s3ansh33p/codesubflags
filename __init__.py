@@ -586,9 +586,12 @@ class Run(Resource):
                         return {"success": False, "data": dataObj}
                 else:
                     dataObj["message"] = "Already solved"
+                    dataObj["solved"] = True
                     return {"success": False, "data": dataObj}
 
-            return {"success": True, "data": r.json()}
+            dataObj = r.json()
+            dataObj["solved"] = True
+            return {"success": True, "data": dataObj}
         else:
             print("Error: " + str(r.status_code))
             print(r.json())
