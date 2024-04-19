@@ -172,13 +172,30 @@ function run_code() {
     })
     .then((response) => response.json())
     .then((data) => {
-        data = data.data.run;
-        $('#coderunner-output').html(data.output)
+        runnerData = data.data.run;
+        $('#coderunner-output').html(runnerData.output)
         // error
-        $("#coderunner-errors").html(data.stderr)
+        $("#coderunner-errors").html(runnerData.stderr)
         // check for sigkil
-        if (data.signal == "SIGKILL" && data.stderr == "" && data.output == "") {
+        if (runnerData.signal == "SIGKILL" && runnerData.stderr == "" && runnerData.output == "") {
             $("#coderunner-errors").html("Your code may have timed out. Please try again. (max execution time of 5 seconds)")
+        }
+        if (data.status) {
+            // I'm going to be really lazy and build the class callback myself
+            const el = document.querySelector("#challenge .row.notification-row");
+            const classMap = {
+                "correct": "alert-success",
+                "already_solved": "alert-info",
+                "incorrect": "alert-danger"
+            }
+            const textMap = {
+                "correct": "Correct!",
+                "already_solved": "Already solved.",
+                "incorrect": "Incorrect."
+            }
+            const statusClass = classMap[data.status];
+            const statusText = textMap[data.status];
+            el.children[0].innerHTML = `<div class="alert text-center w-100 mt-3 ${statusClass}">${statusText}</div>`;
         }
     });
 }
