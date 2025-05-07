@@ -5,15 +5,15 @@
     {{ challenge.html }}
 
     <!-- code runner section -->
-    <div class="row">
+    <div class="row my-3">
         <div class="col-12 form-group">
-            <span>Enter your code here:</span>
-            <textarea id="coderunner" class="challenge-input form-control form-group" type="text" rows="15"></textarea>
-            <span>Output:</span>
-            <textarea id="coderunner-output" class="challenge-input form-control form-group" type="text" rows="15" readonly></textarea>
-            <span>Errors:</span>
+            <p class="mb-0">Enter your code here:</p>
+            <textarea id="coderunner" class="challenge-input form-control form-group" type="text" rows="15" ></textarea>
+            <button class="btn btn-md btn-outline-secondary text-light w-100 mt-2" onclick="run_code()">Run Code</button>
+            <p class="mt-2 mb-0">Output:</p>
+            <textarea id="coderunner-output" class="challenge-input form-control form-group" type="text" rows="5" readonly></textarea>
+            <p class="mt-2 mb-0">Errors:</p>
             <textarea id="coderunner-errors" class="challenge-input form-control form-group" type="text" rows="5" readonly></textarea>
-            <button class="btn btn-md btn-outline-secondary float-right" onclick="run_code()">Run Code</button>
         </div>
     </div>
 

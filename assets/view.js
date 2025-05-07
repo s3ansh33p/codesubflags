@@ -164,6 +164,7 @@ function get_code_template() {
             readOnly: false,
             theme: "dracula",
         });
+        editor.setSize("100%", "500px");
         editor.save();
         editor.setValue(data);
         setTimeout(() => {

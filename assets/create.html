@@ -10,15 +10,35 @@
 
 
 {% block value %}
-    <!-- Original implementation for the value attribute of the challenge -->
     <div class="form-group">
         <label>
-            Value:<br>
+            Max runtime (ms):<br>
             <small class="form-text text-muted">
-                The value of your challenge
+                Enter the maximum runtime a submission is allowed to take.<br>
             </small>
         </label>
-        <input type="number" class="form-control" name="value" placeholder="Enter Challenge Value">
+        <input type="number" class="form-control" name="run_timeout" placeholder="Enter max runtime in ms" value="5000" required>
+    </div>
+
+    <div class="form-group">
+        <label>
+            Python file template<br>
+            <small class="form-text text-muted">
+                Enter python file provided to the user.<br>
+            </small>
+        </label>
+        <input type="text" class="form-control" name="run_file" placeholder="Enter python file template" value="main.py" required>
+    
+    </div>
+
+    <div class="form-group">
+        <label>
+            Data file<br>
+            <small class="form-text text-muted">
+                Enter data file provided to the user (such as csv or txt).<br>
+            </small>
+        </label>
+        <input type="text" class="form-control" name="data_file" placeholder="Enter data file" value="">
     </div>
 
     <!-- Placeholder div to insert the codesubflag information fields and adds a button that calls the "add-new-codesubflag" function in the JavaScript file -->

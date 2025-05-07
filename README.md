@@ -11,3 +11,5 @@ Uses [Piston](https://github.com/engineer-man/piston) for sandboxing and executi
 5. Check it's accessible such as with `docker exec -it ctfd_atr2025-nginx-1 curl http://piston_api:2000/api/v2/runtimes`
 
 You can change the RUNNER_URL environment variable to point to a different instance.
+
+Specify a template python file and data file in the admin UI. The data file will be passed when executing.

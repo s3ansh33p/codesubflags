@@ -29,12 +29,15 @@ from datetime import datetime
 
 RUNNER_URL = os.environ.get("RUNNER_URL", "http://piston_api:2000/api/v2/execute")
 
-# database mdoel for the codesubflag challenge model (no attributes added)
+# database mdoel for the codesubflag challenge model
 class CodesubflagChallenge(Challenges):
     __mapper_args__ = {"polymorphic_identity": "codesubflags"}
     id = db.Column(db.Integer, 
         db.ForeignKey("challenges.id", ondelete="CASCADE"), 
         primary_key=True)
+    run_timeout = db.Column(db.Integer, default=5000)
+    run_file = db.Column(db.String(128)) # template/starter code given to the user
+    data_file = db.Column(db.String(128)) # for txt or csv
 
 # database model for the individual codesubflag
 # includes: id, reference to the associated challenge, desc, key (solution), order
@@ -462,7 +465,7 @@ class Solve(Resource):
             return {"success": True, "data": {"message": "Codesubflag solved", "solved": True}}  
 
 def getContents(fileToConvert):
-    fullpath = os.path.join(os.path.dirname(__file__), fileToConvert)
+    fullpath = os.path.join(os.path.dirname(__file__), "challenge_files", fileToConvert)
     # get contents and convert to string
     data = "";
     with open(fullpath, 'r') as file:
@@ -487,10 +490,26 @@ class Run(Resource):
         except Exception as e:
             return {"success": False, "data": {"message": e}}
 
-        lang = "python3"
 
+        challenge = CodesubflagChallenge.query.filter_by(id = challenge_id).first()
+        if challenge is None:
+            return {"success": False, "data": {"message": "Challenge not found"}}
+        
         submission = data["submission"].strip()
         # instance_id = submission
+
+        files = [{
+            "name": "user.py",
+            "content": submission
+        }]
+        if challenge.data_file:
+            files.append({
+                "name": challenge.data_file,
+                "content": getContents(challenge.data_file)
+            })
+        
+        print("Files: " + str(files))
+        print("Challenge: " + str(challenge.run_timeout) + ", " + str(challenge.run_file) + ", " + str(challenge.data_file))
 
         try:
             r = requests.post(
@@ -498,18 +517,8 @@ class Run(Resource):
                 json={
                     "language": "python3",
                     "version": "3.10.0",
-                    "files": [
-                        {
-                            "name": "SafeCracker.py",
-                            "content": submission
-                        },
-                        {
-                            "name": "Safe.py",
-                            # "content": "def solve():\n\tprint(\"ATR{TEST}\")"
-                            "content": getContents("Safe.py")
-                        }
-                    ],
-                    "run_timeout": 10000,
+                    "files": files, 
+                    "run_timeout": challenge.run_timeout,
                     "stdin": "",
                     "args": [],
                 },
@@ -533,8 +542,14 @@ class Get(Resource):
     # user has to be authentificated to call this endpoint
     @authed_only
     def get(self, challenge_id):
-        # get the challenge data from the database
-        return {"success": True, "data": {"message": getContents("SafeCracker.py")}}
+        challenge = CodesubflagChallenge.query.filter_by(id = challenge_id).first()
+        if challenge is None:
+            return {"success": False, "data": {"message": "Challenge not found"}}
+        
+        if challenge.run_file:
+            return {"success": True, "data": {"message": getContents(challenge.run_file)}}
+        else:
+            return {"success": False, "data": {"message": "No starting code found. Talk to an admin."}}
 
 def load(app):
     upgrade()
