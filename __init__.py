@@ -27,6 +27,7 @@ from CTFd.utils.config import is_teams_mode
 from CTFd.utils.user import get_current_team, get_current_user
 from datetime import datetime
 
+RUNNER_URL = os.environ.get("RUNNER_URL", "http://piston_api:2000/api/v2/execute")
 
 # database mdoel for the codesubflag challenge model (no attributes added)
 class CodesubflagChallenge(Challenges):
@@ -486,7 +487,6 @@ class Run(Resource):
         except Exception as e:
             return {"success": False, "data": {"message": e}}
 
-        apiroute = "https://emkc.org/api/v2/piston/execute"
         lang = "python3"
 
         submission = data["submission"].strip()
@@ -494,7 +494,7 @@ class Run(Resource):
 
         try:
             r = requests.post(
-                str(apiroute),
+                RUNNER_URL,
                 json={
                     "language": "python3",
                     "version": "3.10.0",
@@ -509,7 +509,7 @@ class Run(Resource):
                             "content": getContents("Safe.py")
                         }
                     ],
-                    "run_timeout": 5000,
+                    "run_timeout": 10000,
                     "stdin": "",
                     "args": [],
                 },
