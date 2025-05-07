@@ -161,7 +161,8 @@ function get_code_template() {
             mode: "python",
             indentUnit: 4,
             indentWithTabs: true,
-            readOnly: false
+            readOnly: false,
+            theme: "dracula",
         });
         editor.save();
         editor.setValue(data);
@@ -170,7 +171,7 @@ function get_code_template() {
             editor.focus();
             // set cursor to end
             editor.setCursor(editor.lineCount(), 0);
-        }, 100);
+        }, 200);
         window.editor = editor;
     });
 }
