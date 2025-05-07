@@ -1,20 +1,44 @@
 CTFd._internal.challenge.data = undefined;
 
-// TODO: Remove in CTFd v4.0
-CTFd._internal.challenge.renderer = null;
-
 CTFd._internal.challenge.preRender = function() {};
 
-// TODO: Remove in CTFd v4.0
-CTFd._internal.challenge.render = null;
-
-CTFd._internal.challenge.postRender = function() {
-    // assigns ids to the original html hint element 
+CTFd._internal.challenge.postRender = async function() {
+    await new Promise(resolve => setTimeout(resolve, 1));
     assign_hint_ids();
     // insert the codesubflags into the view
     insert_codesubflags();
-    // get template
+
+    // Ensure CodeMirror is loaded before calling get_code_template
+    await ensureCodeMirrorLoaded();
     get_code_template();
+}
+
+// Utility function to dynamically load a script
+function loadScript(src, integrity, crossorigin) {
+    return new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = src;
+        script.integrity = integrity;
+        script.crossOrigin = crossorigin;
+        script.referrerPolicy = "no-referrer";
+        script.onload = resolve;
+        script.onerror = reject;
+        document.head.appendChild(script);
+    });
+}
+
+// Ensure CodeMirror is loaded before calling get_code_template
+function ensureCodeMirrorLoaded() {
+    const codemirrorSrc = "https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/codemirror.min.js";
+    const codemirrorIntegrity = "sha512-8RnEqURPUc5aqFEN04aQEiPlSAdE0jlFS/9iGgUyNtwFnSKCXhmB6ZTNl7LnDtDWKabJIASzXrzD0K+LYexU9g==";
+    const pythonModeSrc = "https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/mode/python/python.min.js";
+    const pythonModeIntegrity = "sha512-2M0GdbU5OxkGYMhakED69bw0c1pW3Nb0PeF3+9d+SnwN1ryPx3wiDdNqK3gSM7KAU/pEV+2tFJFbMKjKAahOkQ==";
+
+    return loadScript(codemirrorSrc, codemirrorIntegrity, "anonymous")
+        .then(() => loadScript(pythonModeSrc, pythonModeIntegrity, "anonymous"))
+        .catch((error) => {
+            console.error("Failed to load CodeMirror scripts:", error);
+        });
 }
 
 // assigns ids to the original html hint element
@@ -34,11 +58,13 @@ function assign_hint_ids(){
 function insert_codesubflags(){
     // gets the challenge id from the CTFd lib
     let challenge_id = parseInt(CTFd.lib.$('#challenge-id').val())
+    console.log(challenge_id)
 
-    // gets the info needed for the codesubflag view from the api endpoint
-    $.get(`/api/v1/codesubflags/challenges/${challenge_id}/view`).done( function(data) {
-
-        // creates an array of codesubflag ids and sorts them according to their order
+    CTFd.fetch(`/api/v1/codesubflags/challenges/${challenge_id}/view`, {
+        method: "GET"
+    })
+    .then((response) => response.json())
+    .then((data) => {
         let order_array = [];
         Object.keys(data).forEach(key => {
             order_array.push(key)
@@ -49,7 +75,7 @@ function insert_codesubflags(){
 
         // insert codesubflags headline if at least one codesubflag exists
         if (order_array.length > 0) {
-            $("#codesubflags").append("<h5>Flags:</h5>");
+            CTFd.lib.$("#codesubflags").append("<h5>Flags:</h5>");
         }
         
 
@@ -99,7 +125,7 @@ function insert_codesubflags(){
                 </form>
                 <div id="codesubflag_hints_` + id + `"> </div>`;
           }      
-          $("#codesubflags").append(keys);      
+          CTFd.lib.$("#codesubflags").append(keys);      
           
           // creates an array of hint ids and sorts them according to their order
           let hintdata = [];
@@ -115,7 +141,7 @@ function insert_codesubflags(){
         }
         // include headline for main flag at the end
         if (order_array.length > 0) {
-            $("#codesubflags").append("<h5>Main Flag:</h5>");
+            CTFd.lib.$("#codesubflags").append("<h5>Main Flag:</h5>");
         }
     });
 }
@@ -171,12 +197,10 @@ function run_code() {
     .then((response) => response.json())
     .then((data) => {
         data = data.data.run;
-        $('#coderunner-output').html(data.output)
-        // error
-        $("#coderunner-errors").html(data.stderr)
-        // check for sigkil
+        CTFd.lib.$('#coderunner-output').html(data.output)
+        CTFd.lib.$("#coderunner-errors").html(data.stderr)
         if (data.signal == "SIGKILL" && data.stderr == "" && data.output == "") {
-            $("#coderunner-errors").html("Your code may have timed out. Please try again. (max execution time of 5 seconds)")
+            CTFd.lib.$("#coderunner-errors").html("Your code may have timed out. Please try again. (max execution time of 5 seconds)")
         }
     });
 }
@@ -194,7 +218,7 @@ function move_codesubflag_hints(codesubflag_id, hintdata) {
 // input: form event containing: codesubflag id, answer
 function submit_codesubflag(event, codesubflag_id) {
     event.preventDefault();
-    const params = $(event.target).serializeJSON(true);
+    const params = Object.fromEntries(new FormData(event.target).entries());
 
     // calls the api endpoint to attach a hint to a codesubflag
     CTFd.fetch(`/api/v1/codesubflags/solve/${codesubflag_id}`, {
