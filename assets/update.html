@@ -2,13 +2,22 @@
 
 {% block value %}
 	<div class="form-group">
+		<label for="value">
+			Value<br>
+			<small class="form-text text-muted">
+				This is how many points teams will receive once they solve this challenge.
+			</small>
+		</label>
+		<input type="number" class="form-control chal-value" name="value" value="{{ challenge.value }}" required>
+	</div>
+	<div class="form-group">
 			<label>
 					Max runtime (ms):<br>
 					<small class="form-text text-muted">
 							Enter the maximum runtime a submission is allowed to take.<br>
 					</small>
 			</label>
-			<input type="number" class="form-control" name="run_timeout" placeholder="Enter max runtime in ms" value="5000" required>
+			<input type="number" class="form-control" name="run_timeout" placeholder="Enter max runtime in ms" value="{{ challenge.run_timeout }}" required>
 	</div>
 
 	<div class="form-group">
@@ -18,7 +27,7 @@
 							Enter python file provided to the user.<br>
 					</small>
 			</label>
-			<input type="text" class="form-control" name="run_file" placeholder="Enter python file template" value="main.py" required>
+			<input type="text" class="form-control" name="run_file" placeholder="Enter python file template" value="{{ challenge.run_file }}" required>
 	</div>
 		
 	<div class="form-group">
@@ -28,7 +37,7 @@
 							Enter data file provided to the user (such as csv or txt).<br>
 					</small>
 			</label>
-			<input type="text" class="form-control" name="data_file" placeholder="Enter data file" value="">
+			<input type="text" class="form-control" name="data_file" placeholder="Enter data file" value="{{ challenge.data_file }}">
 	</div>
 {% endblock %}
 
