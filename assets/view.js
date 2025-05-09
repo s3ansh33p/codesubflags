@@ -160,9 +160,16 @@ function get_code_template() {
             lineNumbers: true,
             mode: "python",
             indentUnit: 4,
-            indentWithTabs: true,
+            indentWithTabs: false,
             readOnly: false,
             theme: "dracula",
+            extraKeys: {
+                Tab: function(cm) {
+                    var spaces = Array(cm.getOption("indentUnit") + 1).join(" ");
+                    cm.replaceSelection(spaces);
+                },
+                "Shift-Tab": "indentLess"
+            }
         });
         editor.setSize("100%", "500px");
         editor.save();
