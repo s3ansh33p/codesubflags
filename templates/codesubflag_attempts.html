@@ -1,0 +1,113 @@
+{% extends "admin/base.html" %}
+
+{% block stylesheets %}
+{% endblock %}
+
+{% block content %}
+
+<div class="jumbotron">
+    <div class="container">
+        <h1>Code Submissions</h1>
+    </div>
+</div>
+
+<div class="container">
+    <div class="row">
+        <div class="col-md-12">
+            <form method="GET" class="form-inline">
+                <div class="form-group col-md-5 pr-0">
+                    <select name="challenge_id" class="form-control custom-select w-100">
+                        <option value="">All challenges</option>
+                        {% for c in challenges %}
+                        <option value="{{ c.id }}" {% if selected_challenge_id == c.id %}selected{% endif %}>
+                            {{ c.name }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group col-md-5">
+                    <select name="user_id" class="form-control custom-select w-100">
+                        <option value="">All users</option>
+                        {% for u in users %}
+                        <option value="{{ u.id }}" {% if selected_user_id == u.id %}selected{% endif %}>
+                            {{ u.name }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group col-md-2">
+                    <button type="submit" class="btn btn-primary w-100">
+                        <i class="fas fa-search" aria-hidden="true"></i> Filter
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <hr>
+
+    <div class="row">
+        <div class="col-md-12 table-responsive">
+            <table class="table table-striped border">
+                <thead>
+                    <tr>
+                        <th class="text-center"><b>ID</b></th>
+                        <th class="text-center"><b>Date</b></th>
+                        <th><b>Challenge</b></th>
+                        <th><b>User</b></th>
+                        <th><b>stdout</b></th>
+                        <th><b>stderr</b></th>
+                        <th class="text-center"><b>View</b></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for a in attempts.items %}
+                    <tr>
+                        <td class="text-center">{{ a.id }}</td>
+                        <td class="text-center solve-time">
+                            <span data-time="{{ a.date | isoformat }}">{{ a.date }}</span>
+                        </td>
+                        <td>
+                            <a href="{{ url_for('admin.challenges_detail', challenge_id=a.challenge_id) }}">
+                                {{ chal_names.get(a.challenge_id, a.challenge_id) }}
+                            </a>
+                        </td>
+                        <td>
+                            <a href="{{ url_for('admin.users_detail', user_id=a.user_id) }}">
+                                {{ user_names.get(a.user_id, a.user_id) }}
+                            </a>
+                        </td>
+                        <td><pre class="mb-0" title="{{ a.stdout or '' }}">{{ (a.stdout or '') | truncate(60, True) }}</pre></td>
+                        <td><pre class="mb-0" title="{{ a.stderr or '' }}">{{ (a.stderr or '') | truncate(60, True) }}</pre></td>
+                        <td class="text-center">
+                            <a href="{{ url_for('codesubflags_admin.admin_attempt_detail', attempt_id=a.id) }}" class="btn btn-sm btn-outline-primary">
+                                <i class="fas fa-eye"></i>
+                            </a>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="7" class="text-center text-muted">No stored attempts match the current filters.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% if attempts.pages > 1 %}
+            <div class="text-center">Page
+                <br>
+                {% if attempts.page != 1 %}
+                    <a href="{{ prev_page }}">&lt;&lt;&lt;</a>
+                {% endif %}
+                {{ attempts.page }} / {{ attempts.pages }}
+                {% if attempts.next_num %}
+                    <a href="{{ next_page }}">&gt;&gt;&gt;</a>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% endblock %}

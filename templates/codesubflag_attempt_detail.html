@@ -1,0 +1,75 @@
+{% extends "admin/base.html" %}
+
+{% block stylesheets %}
+{% endblock %}
+
+{% block content %}
+
+<div class="jumbotron">
+    <div class="container">
+        <h1>Code Submission #{{ attempt.id }}</h1>
+    </div>
+</div>
+
+<div class="container">
+    <div class="row">
+        <div class="col-md-12">
+            <a href="{{ back_url }}" class="btn btn-outline-secondary mb-3">
+                <i class="fas fa-arrow-left"></i> Back to list
+            </a>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-12">
+            <table class="table table-bordered">
+                <tbody>
+                    <tr>
+                        <th style="width: 160px;">Challenge</th>
+                        <td>
+                            <a href="{{ url_for('admin.challenges_detail', challenge_id=attempt.challenge_id) }}">
+                                {{ challenge_name }}
+                            </a>
+                            <span class="text-muted">(id {{ attempt.challenge_id }})</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>User</th>
+                        <td>
+                            <a href="{{ url_for('admin.users_detail', user_id=attempt.user_id) }}">
+                                {{ user_name }}
+                            </a>
+                            <span class="text-muted">(id {{ attempt.user_id }})</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Date</th>
+                        <td><span data-time="{{ attempt.date | isoformat }}">{{ attempt.date }}</span></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-12">
+            <h4>Code</h4>
+            <pre class="border p-3 bg-light" style="max-height: 500px; overflow:auto;">{{ attempt.code or '' }}</pre>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-6">
+            <h4>stdout</h4>
+            <pre class="border p-3 bg-light" style="max-height: 400px; overflow:auto;">{{ attempt.stdout or '' }}</pre>
+        </div>
+        <div class="col-md-6">
+            <h4>stderr</h4>
+            <pre class="border p-3 bg-light" style="max-height: 400px; overflow:auto;">{{ attempt.stderr or '' }}</pre>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% endblock %}

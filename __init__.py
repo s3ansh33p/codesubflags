@@ -1,4 +1,4 @@
-from flask import Blueprint, request # only needed for Blueprint import
+from flask import Blueprint, abort, render_template, request, url_for # only needed for Blueprint import
 from flask_restx import Namespace, Resource
 
 from CTFd.models import (
@@ -9,17 +9,18 @@ from CTFd.models import (
     Hints,
     Solves,
     Tags,
+    Users,
     db,
     Awards,
 )
 
 import re
 import requests
-import os 
+import os
 
 from CTFd.utils.uploads import delete_file #to delete challenge files
 from CTFd.utils.decorators import admins_only, authed_only
-from CTFd.plugins import register_plugin_assets_directory
+from CTFd.plugins import register_plugin_assets_directory, register_admin_plugin_script
 from CTFd.plugins.challenges import CHALLENGE_CLASSES, BaseChallenge
 from CTFd.plugins.migrations import upgrade
 from CTFd.api import CTFd_API_v1
@@ -662,5 +663,92 @@ def load(app):
     register_plugin_assets_directory(app, base_path="/plugins/codesubflags/assets/")
     # Expose the default so admin HTML forms don't have to hardcode it.
     app.jinja_env.globals["CODESUBFLAGS_DEFAULT_HISTORY_SIZE"] = DEFAULT_HISTORY_SIZE
+
+    codesubflags_admin = Blueprint(
+        "codesubflags_admin",
+        __name__,
+        template_folder="templates",
+    )
+
+    @codesubflags_admin.route("/admin/codesubflags/")
+    @admins_only
+    def admin_attempts_listing():
+        page = abs(request.args.get("page", 1, type=int))
+        challenge_id = request.args.get("challenge_id", type=int)
+        user_id = request.args.get("user_id", type=int)
+
+        q = CodesubflagAttempt.query
+        if challenge_id:
+            q = q.filter_by(challenge_id=challenge_id)
+        if user_id:
+            q = q.filter_by(user_id=user_id)
+
+        attempts = (
+            q.order_by(CodesubflagAttempt.date.desc())
+             .paginate(page=page, per_page=50, error_out=False)
+        )
+
+        challenges = (
+            Challenges.query
+            .filter_by(type="codesubflags")
+            .order_by(Challenges.name)
+            .all()
+        )
+        users = (
+            db.session.query(Users)
+            .join(CodesubflagAttempt, CodesubflagAttempt.user_id == Users.id)
+            .distinct()
+            .order_by(Users.name)
+            .all()
+        )
+
+        chal_names = {c.id: c.name for c in Challenges.query.all()}
+        user_names = {u.id: u.name for u in Users.query.all()}
+
+        args = dict(request.args)
+        args.pop("page", None)
+        return render_template(
+            "codesubflag_attempts.html",
+            attempts=attempts,
+            challenges=challenges,
+            users=users,
+            chal_names=chal_names,
+            user_names=user_names,
+            selected_challenge_id=challenge_id,
+            selected_user_id=user_id,
+            prev_page=url_for(request.endpoint, page=attempts.prev_num, **args),
+            next_page=url_for(request.endpoint, page=attempts.next_num, **args),
+        )
+
+    @codesubflags_admin.route("/admin/codesubflags/<int:attempt_id>")
+    @admins_only
+    def admin_attempt_detail(attempt_id):
+        attempt = CodesubflagAttempt.query.filter_by(id=attempt_id).first()
+        if attempt is None:
+            abort(404)
+
+        challenge = Challenges.query.filter_by(id=attempt.challenge_id).first()
+        user = Users.query.filter_by(id=attempt.user_id).first()
+
+        # Preserve listing filters/page when sending the user back.
+        back_args = {
+            k: v for k, v in request.args.items()
+            if k in ("page", "challenge_id", "user_id")
+        }
+        back_url = url_for(
+            "codesubflags_admin.admin_attempts_listing", **back_args
+        )
+
+        return render_template(
+            "codesubflag_attempt_detail.html",
+            attempt=attempt,
+            challenge_name=challenge.name if challenge else attempt.challenge_id,
+            user_name=user.name if user else attempt.user_id,
+            back_url=back_url,
+        )
+
+    app.register_blueprint(codesubflags_admin)
+    register_admin_plugin_script("/plugins/codesubflags/assets/admin_nav.js")
+
     # creates all necessairy endpoints
     CTFd_API_v1.add_namespace(codesubflags_namespace, '/codesubflags')
