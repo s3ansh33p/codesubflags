@@ -58,86 +58,28 @@ function assign_hint_ids(){
 function insert_codesubflags(){
     // gets the challenge id from the CTFd lib
     let challenge_id = parseInt(CTFd.lib.$('#challenge-id').val())
-    console.log(challenge_id)
 
     CTFd.fetch(`/api/v1/codesubflags/challenges/${challenge_id}/view`, {
         method: "GET"
     })
     .then((response) => response.json())
     .then((data) => {
-        let order_array = [];
-        Object.keys(data).forEach(key => {
-            order_array.push(key)
-        });
-        order_array.sort(function(a,b){
-            return data[a]["order"] - data[b]["order"];
-        });
+        const order_array = Object.keys(data).sort((a, b) => data[a].order - data[b].order);
 
         // insert codesubflags headline if at least one codesubflag exists
         if (order_array.length > 0) {
             CTFd.lib.$("#codesubflags").append("<h5>Flags:</h5>");
         }
-        
 
-        // goes through the list of codesubflag ids
-        for (let i = 0; i < order_array.length; i++) {
-            // temp codesubflag variables (id, desc, whether the codesubflag is solved by the current team)
-            let id = order_array[i];
-            let desc = data[id].desc;
-            let placeholder = data[id].placeholder;
-            let points = data[id].points;
-            let codesubflag_solved_by_me = data[id].solved;
+        for (const id of order_array) {
+            const cs = data[id];
+            CTFd.lib.$("#codesubflags").append(render_codesubflag_form(id, cs));
 
-            if (!placeholder) {
-                placeholder = "Submit subflag for extra awards.";
-            }
-
-            // if the codesubflag is already soved -> insert a disabled form field with lightgreen background and an delete button 
-            if (codesubflag_solved_by_me) {
-                var keys = `<form id="codesubflag_form` + id + `">
-                        <p class="form-text">
-                            ` + desc + `
-                            | Points:  <b>+` + points + `</b>
-                        </p> 
-                        <div class="row" style="margin-bottom: 10px;">
-                            <div class="col-md-9">
-                                <input type="text" class="form-control chal-codesubflag_key" name="answer" placeholder="Subflag Solved!" style="background-color:#f5fff1;" disabled>
-                            </div>
-                            
-                        </div>
-                    </form>
-                    <div id="codesubflag_hints_` + id + `"> </div>`;
-            // if the codesubflag is not yet solved -> insert a formfield with a submit button
-            } else {
-                var keys = `<form id="codesubflag_form` + id + `" onsubmit="submit_codesubflag(event, ${id})">
-                    <p class="form-text">
-                        ` + desc + `
-                        | Points:  <b>+` + points + `</b>
-                    </p>
-                    <div class="row">
-                        <div class="col-md-9 form-group">
-                            <input type="text" class="form-control chal-codesubflag_key" name="answer" placeholder=" ` + placeholder + `" required>
-                        </div>
-                        <div class="col-md-3 form-group" id=submit style="margin-top: 6px;">
-                            <input type="submit" value="Submit" class="btn btn-md btn-outline-secondary float-right">
-                        </div>
-                    </div>
-                </form>
-                <div id="codesubflag_hints_` + id + `"> </div>`;
-          }      
-          CTFd.lib.$("#codesubflags").append(keys);      
-          
-          // creates an array of hint ids and sorts them according to their order
-          let hintdata = [];
-          Object.keys(data[id].hints).forEach(key => {
-              hintdata.push(key);
-          });
-          hintdata.sort(function(a,b){
-              return data[id].hints[a].order - data[id].hints[b].order;
-          });
-          
-          // calls a function to move the hints to the according position
-          move_codesubflag_hints(id, hintdata);
+            // hints sorted by order, then re-parented under this subflag
+            const hintdata = Object.keys(cs.hints).sort(
+                (a, b) => cs.hints[a].order - cs.hints[b].order
+            );
+            move_codesubflag_hints(id, hintdata);
         }
         // include headline for main flag at the end
         if (order_array.length > 0) {
@@ -146,58 +88,223 @@ function insert_codesubflags(){
     });
 }
 
+// Build the subflag form. Solved and unsolved branches share the same
+// shell — they differ only in the input (disabled vs. writable) and the
+// submit button (present only when unsolved).
+function render_codesubflag_form(id, cs) {
+    const desc = cs.desc;
+    const points = cs.points;
+    const placeholder = cs.placeholder || "Submit subflag for extra awards.";
+    const solved = cs.solved;
+
+    const input = solved
+        ? `<input type="text" class="form-control chal-codesubflag_key" name="answer" placeholder="Subflag Solved!" style="background-color:#f5fff1;" disabled>`
+        : `<input type="text" class="form-control chal-codesubflag_key" name="answer" placeholder=" ${placeholder}" required>`;
+
+    const submitCol = solved
+        ? ``
+        : `<div class="col-md-3 form-group" id=submit style="margin-top: 6px;">
+               <input type="submit" value="Submit" class="btn btn-md btn-outline-secondary float-right">
+           </div>`;
+
+    const formAttrs = solved ? `` : ` onsubmit="submit_codesubflag(event, ${id})"`;
+
+    return `<form id="codesubflag_form${id}"${formAttrs}>
+                <p class="form-text">${desc} | Points: <b>+${points}</b></p>
+                <div class="row" style="margin-bottom: 10px;">
+                    <div class="col-md-9 form-group">${input}</div>
+                    ${submitCol}
+                </div>
+            </form>
+            <div id="codesubflag_hints_${id}"> </div>`;
+}
+
+// Namespaced state bag so we aren't sprinkling window.codesubflags_* globals.
+// history_size semantics match the server-side contract in __init__.py:
+//   HISTORY_DISABLED (-1): no server retention, dropdown stays hidden
+//   0:                     unlimited (server still caps via MAX_HISTORY_CAP)
+//   N > 0:                 keep last N runs per user per challenge
+const HISTORY_DISABLED = -1;
+const DEFAULT_HISTORY_SIZE_FALLBACK = 10;
+window.codesubflags = window.codesubflags || {
+    editor: null,
+    template: null,
+    challenge_id: null,
+    history_size: DEFAULT_HISTORY_SIZE_FALLBACK,
+    attempts: {},
+    // Monotonic counter so older in-flight history fetches can't clobber newer ones.
+    history_fetch_seq: 0,
+};
+
+// localStorage key for a user's in-progress draft for a given challenge.
+function draft_key(challenge_id) {
+    return `codesubflags_draft_${challenge_id}`;
+}
+
+function save_draft(id, code) { localStorage.setItem(draft_key(id), code); }
+function clear_draft(id)      { localStorage.removeItem(draft_key(id)); }
+// Guarded: runs on the editor's init path, so a throw here would prevent the
+// editor from rendering at all (e.g. Safari private mode, blocked storage).
+function load_draft(id) { try { return localStorage.getItem(draft_key(id)); } catch (e) { return null; } }
+
+function debounce(fn, ms) {
+    let t = null;
+    return function (...args) {
+        if (t) clearTimeout(t);
+        t = setTimeout(() => fn.apply(this, args), ms);
+    };
+}
+
 function get_code_template() {
-    // post to /api/v1/codesubflags/get/${challenge_id}
-    const challenge_id = parseInt(CTFd.lib.$('#challenge-id').val())
+    const challenge_id = parseInt(CTFd.lib.$('#challenge-id').val());
 
     CTFd.fetch(`/api/v1/codesubflags/get/${challenge_id}`, {
       method: "GET"
     })
     .then((response) => response.json())
     .then((data) => {
-        data = data.data.message;
+        if (!data || !data.success) {
+            console.error("codesubflags: template fetch unsuccessful", data);
+            return;
+        }
+        const template = data.data.message;
+        const history_size = data.data?.history_size ?? DEFAULT_HISTORY_SIZE_FALLBACK;
+
+        // Remember the clean starting template so Reset works without a refetch.
+        window.codesubflags.template = template;
+        window.codesubflags.challenge_id = challenge_id;
+        window.codesubflags.history_size = history_size;
+
         const editor = CodeMirror.fromTextArea(document.getElementById("coderunner"), {
             lineNumbers: true,
             mode: "python",
             indentUnit: 4,
+            // Tabs -> spaces to avoid mixed indentation in submitted code.
             indentWithTabs: false,
             readOnly: false,
             theme: "dracula",
             extraKeys: {
                 Tab: function(cm) {
-                    var spaces = Array(cm.getOption("indentUnit") + 1).join(" ");
+                    const spaces = Array(cm.getOption("indentUnit") + 1).join(" ");
                     cm.replaceSelection(spaces);
                 },
                 "Shift-Tab": "indentLess"
             }
         });
         editor.setSize("100%", "500px");
-        editor.save();
-        editor.setValue(data);
+
+        // Prefer a locally saved draft so accidental navigation doesn't lose work.
+        const draft = load_draft(challenge_id);
+        const initial = (draft !== null && draft !== "") ? draft : template;
+        editor.setValue(initial);
+
+        // Debounced autosave so every keystroke doesn't hit localStorage.
+        const persist = debounce(() => {
+            editor.save();
+            save_draft(challenge_id, editor.getValue());
+        }, 500);
+        editor.on("change", persist);
+
         setTimeout(() => {
             editor.refresh();
             editor.focus();
-            // set cursor to end
             editor.setCursor(editor.lineCount(), 0);
         }, 200);
+        window.codesubflags.editor = editor;
+        // Kept for backwards-compat — some hand-pasted console snippets still poke window.editor.
         window.editor = editor;
+
+        // Server-side history is optional — only render the UI when the admin enabled it.
+        if (history_size !== HISTORY_DISABLED) {
+            refresh_history_dropdown();
+        }
+    })
+    .catch((err) => {
+        console.error("codesubflags: template fetch failed", err);
     });
 }
 
+function refresh_history_dropdown() {
+    const state = window.codesubflags;
+    const challenge_id = state.challenge_id;
+    if (challenge_id === null || typeof challenge_id === "undefined") return;
+
+    // Tag this request so stale responses don't clobber a newer dropdown state.
+    const seq = ++state.history_fetch_seq;
+
+    CTFd.fetch(`/api/v1/codesubflags/attempts/${challenge_id}`, {
+        method: "GET"
+    })
+    .then((response) => response.json())
+    .then((data) => {
+        if (seq !== state.history_fetch_seq) return; // superseded by a newer fetch
+        if (!data.success) return;
+        const attempts = data.data?.attempts ?? [];
+        const row = document.getElementById("coderunner-history-row");
+        const select = document.getElementById("coderunner-history");
+        if (!row || !select) return;
+
+        // Cache so restore doesn't need another round-trip.
+        state.attempts = {};
+        attempts.forEach((a) => { state.attempts[a.id] = a; });
+
+        select.innerHTML = '<option value="">Restore a previous run…</option>';
+        attempts.forEach((a) => {
+            const opt = document.createElement("option");
+            opt.value = a.id;
+            const when = a.date ? new Date(a.date).toLocaleString() : "";
+            const preview = (a.code || "").split("\n")[0].slice(0, 40);
+            opt.textContent = `${when} — ${preview}`;
+            select.appendChild(opt);
+        });
+
+        row.style.display = attempts.length > 0 ? "" : "none";
+    });
+}
+
+function restore_selected_attempt() {
+    const state = window.codesubflags;
+    const select = document.getElementById("coderunner-history");
+    if (!select || !select.value) return;
+    const attempt = state.attempts[select.value];
+    if (!attempt || !state.editor) return;
+    if (!confirm("Replace the current editor contents with this saved run?")) return;
+
+    state.editor.setValue(attempt.code || "");
+    state.editor.save();
+    save_draft(state.challenge_id, state.editor.getValue());
+}
+
+function reset_code_to_default() {
+    const state = window.codesubflags;
+    // Guard against the template fetch having failed — without this, Reset
+    // would blank the editor instead of no-oping.
+    if (!state.editor || typeof state.template !== "string") return;
+    if (!confirm("Reset the editor to the original starting code? Your current draft will be lost.")) return;
+
+    clear_draft(state.challenge_id);
+    state.editor.setValue(state.template);
+    state.editor.save();
+    state.editor.focus();
+    state.editor.setCursor(state.editor.lineCount(), 0);
+}
+
 function run_code() {
-    // button with post request to /api/codesubflags/run
-    // calls the api endpoint to attach a hint to a codesubflag
-    const challenge_id = parseInt(CTFd.lib.$('#challenge-id').val())
-    // const submission = CTFd.lib.$('#coderunner').val()
-    // get submission from editor
-    const editor = window.editor;
+    const state = window.codesubflags;
+    const challenge_id = parseInt(CTFd.lib.$('#challenge-id').val());
+    const editor = state.editor;
+    if (!editor) return;
     editor.save();
     const submission = editor.getValue();
 
     const body = {
         challenge_id: challenge_id,
         submission: submission
-    }
+    };
+
+    // Persist the current buffer before firing the run — belt-and-braces in case
+    // of a network error or the user navigating away while the request is in flight.
+    save_draft(challenge_id, submission);
 
     CTFd.fetch(`/api/v1/codesubflags/run/${challenge_id}`, {
       method: "POST",
@@ -205,11 +312,14 @@ function run_code() {
     })
     .then((response) => response.json())
     .then((data) => {
-        data = data.data.run;
-        CTFd.lib.$('#coderunner-output').html(data.output)
-        CTFd.lib.$("#coderunner-errors").html(data.stderr)
-        if (data.signal == "SIGKILL" && data.stderr == "" && data.output == "") {
-            CTFd.lib.$("#coderunner-errors").html("Your code may have timed out. Please try again. (max execution time of 5 seconds)")
+        const run = data.data.run;
+        CTFd.lib.$('#coderunner-output').html(run.output);
+        CTFd.lib.$("#coderunner-errors").html(run.stderr);
+        if (run.signal == "SIGKILL" && run.stderr == "" && run.output == "") {
+            CTFd.lib.$("#coderunner-errors").html("Your code may have timed out. Please try again. (max execution time of 5 seconds)");
+        }
+        if (state.history_size !== HISTORY_DISABLED) {
+            refresh_history_dropdown();
         }
     });
 }
@@ -220,7 +330,7 @@ function move_codesubflag_hints(codesubflag_id, hintdata) {
     for (let i = 0; i < hintdata.length; i++) {
         // move the element
         document.getElementById("codesubflag_hints_" + codesubflag_id).appendChild( document.getElementById("hint_" + hintdata[i]) );
-    }  
+    }
 }
 
 // function to submit a codesubflag solution (gets called when the player presses submit)

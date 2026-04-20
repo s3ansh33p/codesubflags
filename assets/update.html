@@ -39,6 +39,16 @@
 			</label>
 			<input type="text" class="form-control" name="data_file" placeholder="Enter data file" value="{{ challenge.data_file }}">
 	</div>
+
+	<div class="form-group">
+			<label>
+					Run history size<br>
+					<small class="form-text text-muted">
+							Server-side retention of each user's code runs. Use <code>-1</code> for disabled (browser localStorage only), <code>0</code> for unlimited, or a positive number to keep only the last N runs per user.
+					</small>
+			</label>
+			<input type="number" class="form-control" name="history_size" value="{{ challenge.history_size if challenge.history_size is not none else CODESUBFLAGS_DEFAULT_HISTORY_SIZE }}" required>
+	</div>
 {% endblock %}
 
 {% block footer %}

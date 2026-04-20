@@ -50,6 +50,16 @@
         <input type="text" class="form-control" name="data_file" placeholder="Enter data file" value="">
     </div>
 
+    <div class="form-group">
+        <label>
+            Run history size<br>
+            <small class="form-text text-muted">
+                Server-side retention of each user's code runs. Use <code>-1</code> for disabled (browser localStorage only), <code>0</code> for unlimited, or a positive number to keep only the last N runs per user.
+            </small>
+        </label>
+        <input type="number" class="form-control" name="history_size" placeholder="{{ CODESUBFLAGS_DEFAULT_HISTORY_SIZE }}" value="{{ CODESUBFLAGS_DEFAULT_HISTORY_SIZE }}" required>
+    </div>
+
     <!-- Placeholder div to insert the codesubflag information fields and adds a button that calls the "add-new-codesubflag" function in the JavaScript file -->
     <div id="codesubflag_list" name="codesubflag_list"></div>
     <div style="text-align:center">

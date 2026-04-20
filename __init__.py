@@ -29,15 +29,65 @@ from datetime import datetime
 
 RUNNER_URL = os.environ.get("RUNNER_URL", "http://piston_api:2000/api/v2/execute")
 
+DEFAULT_HISTORY_SIZE = 10
+MAX_HISTORY_CAP = 500
+
+def _history_size(challenge):
+    size = challenge.history_size
+    return size if size is not None else DEFAULT_HISTORY_SIZE
+
+
+def _effective_retention(size):
+    # Translate the admin-facing history_size contract into a row count to keep:
+    #   -1 -> 0 (disabled, nothing persisted)
+    #    0 -> MAX_HISTORY_CAP (unlimited, bounded by safety cap)
+    #    N -> min(N, MAX_HISTORY_CAP)
+    if size == -1:
+        return 0
+    if size == 0:
+        return MAX_HISTORY_CAP
+    return min(size, MAX_HISTORY_CAP)
+
 # database mdoel for the codesubflag challenge model
 class CodesubflagChallenge(Challenges):
     __mapper_args__ = {"polymorphic_identity": "codesubflags"}
-    id = db.Column(db.Integer, 
-        db.ForeignKey("challenges.id", ondelete="CASCADE"), 
+    id = db.Column(db.Integer,
+        db.ForeignKey("challenges.id", ondelete="CASCADE"),
         primary_key=True)
     run_timeout = db.Column(db.Integer, default=5000)
     run_file = db.Column(db.String(128)) # template/starter code given to the user
     data_file = db.Column(db.String(128)) # for txt or csv
+    # Server-side run history retention per user.
+    #   -1 -> disabled (no server logging; localStorage only)
+    #    0 -> unlimited
+    #    N -> keep only the most recent N attempts per user
+    history_size = db.Column(db.Integer, default=DEFAULT_HISTORY_SIZE)
+
+
+# Records every Run-click submission so a user can restore prior code if they
+# misclick/navigate away. Per-user history (not team-shared) so teammates
+# don't see each other's in-progress drafts. Governed by
+# CodesubflagChallenge.history_size.
+class CodesubflagAttempt(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    challenge_id = db.Column(db.Integer,
+        db.ForeignKey("challenges.id", ondelete="CASCADE"))
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"))
+    code = db.Column(db.Text)
+    stdout = db.Column(db.Text, nullable=True)
+    stderr = db.Column(db.Text, nullable=True)
+    date = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # Per-user history lookup with ordering — without this, prune/list scales
+    # as O(n) in the user's cumulative run count.
+    __table_args__ = (
+        db.Index(
+            "ix_codesubflag_attempt_user_challenge_date",
+            "challenge_id",
+            "user_id",
+            "date",
+        ),
+    )
 
 # database model for the individual codesubflag
 # includes: id, reference to the associated challenge, desc, key (solution), order
@@ -193,6 +243,9 @@ class CodesubflagChallengeType(BaseChallenge):
         # delete all codesubflags of the challenge
         Codesubflags.query.filter_by(challenge_id=challenge.id).delete()
 
+        # delete all code-run history entries for the challenge
+        CodesubflagAttempt.query.filter_by(challenge_id=challenge.id).delete()
+
         # delete all ordinary challenge files
         Fails.query.filter_by(challenge_id=challenge.id).delete()
         Solves.query.filter_by(challenge_id=challenge.id).delete()
@@ -214,6 +267,28 @@ class CodesubflagChallengeType(BaseChallenge):
 # inputs: challenge_id, codesubflag_desc, codesubflag_key, codesubflag_order
 
 codesubflags_namespace = Namespace("codesubflags", description="Endpoint retrieve codesubflags")
+
+
+def _hint_order_map(codesubflag_id):
+    hints = CodesubflagHint.query.filter_by(codesubflag_id=codesubflag_id).all()
+    return {h.id: {"order": h.hint_order} for h in hints}
+
+
+def _serialize_codesubflag(cs, *, include_key=False, solved=None):
+    data = {
+        "desc": cs.codesubflag_desc,
+        "placeholder": cs.codesubflag_placeholder,
+        "order": cs.codesubflag_order,
+        "points": cs.codesubflag_points,
+        "hints": _hint_order_map(str(cs.id)),
+    }
+    if include_key:
+        # Admin-only view — safe to expose the answer key and name.
+        data["name"] = cs.codesubflag_name
+        data["key"] = cs.codesubflag_key
+    if solved is not None:
+        data["solved"] = solved
+    return data
 
 @codesubflags_namespace.route("")
 class Codesubflag(Resource):
@@ -256,7 +331,6 @@ class Codesubflag(Resource):
     def patch(self, codesubflag_id):
         # parse request arguments
         data = request.get_json()
-        print(data)
         # get codesubflag from database
         codesubflag = Codesubflags.query.filter_by(id = codesubflag_id).first()
 
@@ -291,7 +365,7 @@ class Codesubflag(Resource):
     def delete(self, codesubflag_id):
 
         # delete associated hints, solved and the codesubflag itself
-        CodesubflagHint.query.filter_by(codesubflag_id = codesubflag_id).delete
+        CodesubflagHint.query.filter_by(codesubflag_id = codesubflag_id).delete()
         CodesubflagSolve.query.filter_by(codesubflag_id = codesubflag_id).delete()
         Codesubflags.query.filter_by(id = codesubflag_id).delete()
 
@@ -307,27 +381,11 @@ class Updates(Resource):
     # user has to be authentificated as admin to call this endpoint
     @admins_only
     def get(self, chal_id):
-        # searches for all codesubflags connected to the challenge
-        codesubflag_data = Codesubflags.query.filter_by(challenge_id = chal_id).all()        
-        
-        # return a json containng for each codesubflag: desc, key, order, hints
-        # where hints includes the id of all hints and the order they are supposed to be in
-        codesubflag_json = {}
-        for i in range(len(codesubflag_data)):
-            id_var = str(codesubflag_data[i].id)
-            hints = CodesubflagHint.query.filter_by(codesubflag_id = id_var).all()
-            codesubflag_json[id_var]  =  {
-                "name": codesubflag_data[i].codesubflag_name,
-                "desc": codesubflag_data[i].codesubflag_desc,
-                "placeholder": codesubflag_data[i].codesubflag_placeholder,
-                "key": codesubflag_data[i].codesubflag_key,
-                "order": codesubflag_data[i].codesubflag_order,
-                "points": codesubflag_data[i].codesubflag_points,
-                "hints": {}
-            }
-            for it in range(len(hints)):
-                codesubflag_json[id_var]["hints"][hints[it].id] = {"order": hints[it].hint_order}
-        return codesubflag_json
+        codesubflag_data = Codesubflags.query.filter_by(challenge_id=chal_id).all()
+        return {
+            str(cs.id): _serialize_codesubflag(cs, include_key=True)
+            for cs in codesubflag_data
+        }
 
 @codesubflags_namespace.route("/hints/<hint_id>")
 class Hint(Resource):
@@ -370,35 +428,16 @@ class Views(Resource):
     # user has to be authentificated to call this endpoint
     @authed_only
     def get(self, chal_id):
-        # parse challenge id from request arguments
-        id = request.args.get('id')
-        # get team id from the user that called the endpoint
         team = get_current_team()
-        # searches for all codesubflags connected to the challenge
-        codesubflag_data = Codesubflags.query.filter_by(challenge_id = chal_id).all()
-
-        # return a json containg for each codesubflag: codesubflag_id, desc, order, whether the codesubflag has been solved by the users team, hints
-        # where hints includes the id of all hints and the order they are supposed to be in
-        codesubflag_json = {}
-        for i in range(len(codesubflag_data)):
-            id_var = str(codesubflag_data[i].id)
-            # bool whether the codesubflag has been solved by the current team
-            if not team:
-                solved = CodesubflagSolve.query.filter_by(codesubflag_id = id_var, team_id = None).first() is not None
-            else:
-                solved = CodesubflagSolve.query.filter_by(codesubflag_id = id_var, team_id = team.id).first() is not None
-            hints = CodesubflagHint.query.filter_by(codesubflag_id = id_var).all()
-            codesubflag_json[id_var]  =  {
-                "desc": codesubflag_data[i].codesubflag_desc,
-                "placeholder": codesubflag_data[i].codesubflag_placeholder,
-                "order": codesubflag_data[i].codesubflag_order,
-                "solved": solved,
-                "points": codesubflag_data[i].codesubflag_points,
-                "hints": {},
-            }            
-            for it in range(len(hints)):
-                codesubflag_json[id_var]["hints"][hints[it].id] = {"order": hints[it].hint_order}
-        return codesubflag_json
+        team_id = team.id if team else None
+        codesubflag_data = Codesubflags.query.filter_by(challenge_id=chal_id).all()
+        result = {}
+        for cs in codesubflag_data:
+            solved = CodesubflagSolve.query.filter_by(
+                codesubflag_id=str(cs.id), team_id=team_id
+            ).first() is not None
+            result[str(cs.id)] = _serialize_codesubflag(cs, solved=solved)
+        return result
 
 @codesubflags_namespace.route("/solve/<codesubflag_id>")
 class Solve(Resource):
@@ -425,44 +464,27 @@ class Solve(Resource):
         else:
             solved = CodesubflagSolve.query.filter_by(codesubflag_id = codesubflag_id, team_id = team.id).first() is not None
         if solved:
-            print("Codesubflag: already solved")
             return {"success": True, "data": {"message": "was already solved", "solved": True}}
-        
+
         # if the key is correct and the flag was not already solved
         # add solve to database and return true
-        else:            
-            user = get_current_user()
-            
-            # if team mode is enabled then save user and team in the database 
-            if team is not None:
-                solve = CodesubflagSolve(
-                    codesubflag_id =codesubflag_id,
-                    user_id = user.id,
-                    team_id = team.id,
-                )
-                award = Awards(
-                    name= Codesubflags.query.filter_by(id = codesubflag_id).all()[0].codesubflag_name,
-                    user_id = user.id,
-                    team_id = team.id,
-                    value = Codesubflags.query.filter_by(id = codesubflag_id).all()[0].codesubflag_points
-                )
-            # if user mode save team id as NULL to the database otherwise we'll get a DB error due to the table desing.
-            else:
-                solve = CodesubflagSolve(
-                    codesubflag_id=codesubflag_id,
-                    user_id=user.id,
-                    team_id=None,
-                )
-                award = Awards(
-                    name= Codesubflags.query.filter_by(id = codesubflag_id).all()[0].codesubflag_name,
-                    user_id=user.id,
-                    team_id=None,
-                    value = Codesubflags.query.filter_by(id = codesubflag_id).all()[0].codesubflag_points
-                )
-            db.session.add(solve)
-            db.session.add(award)
-            db.session.commit()
-            return {"success": True, "data": {"message": "Codesubflag solved", "solved": True}}  
+        user = get_current_user()
+        team_id = team.id if team is not None else None
+        solve = CodesubflagSolve(
+            codesubflag_id=codesubflag_id,
+            user_id=user.id,
+            team_id=team_id,
+        )
+        award = Awards(
+            name=right_key.codesubflag_name,
+            user_id=user.id,
+            team_id=team_id,
+            value=right_key.codesubflag_points,
+        )
+        db.session.add(solve)
+        db.session.add(award)
+        db.session.commit()
+        return {"success": True, "data": {"message": "Codesubflag solved", "solved": True}}
 
 def getContents(fileToConvert):
     fullpath = os.path.join(os.path.dirname(__file__), "challenge_files", fileToConvert)
@@ -507,9 +529,6 @@ class Run(Resource):
                 "name": challenge.data_file,
                 "content": getContents(challenge.data_file)
             })
-        
-        print("Files: " + str(files))
-        print("Challenge: " + str(challenge.run_timeout) + ", " + str(challenge.run_file) + ", " + str(challenge.data_file))
 
         try:
             r = requests.post(
@@ -527,11 +546,42 @@ class Run(Resource):
             return {"success": False, "data": {"message": "Challenge oracle is not available. Talk to an admin."}}
 
         if r.status_code == 200:
-            return {"success": True, "data": r.json()}
+            payload = r.json()
+            _record_attempt(challenge, submission, payload)
+            return {"success": True, "data": payload}
         else:
-            print("Error: " + str(r.status_code))
-            print(r.json())
             return {"success": False, "data": {"message": "Non 200 code returned. Talk to an admin."}}
+
+
+def _record_attempt(challenge, submission, runner_payload):
+    retention = _effective_retention(_history_size(challenge))
+    if retention == 0:
+        return
+    user = get_current_user()
+    if user is None:
+        return
+    run_block = runner_payload.get("run") or {}
+    attempt = CodesubflagAttempt(
+        challenge_id=challenge.id,
+        user_id=user.id,
+        code=submission,
+        stdout=run_block.get("output"),
+        stderr=run_block.get("stderr"),
+    )
+    db.session.add(attempt)
+    db.session.commit()
+
+    stale = (
+        CodesubflagAttempt.query
+        .filter_by(challenge_id=challenge.id, user_id=user.id)
+        .order_by(CodesubflagAttempt.date.desc())
+        .offset(retention)
+        .all()
+    )
+    if stale:
+        for row in stale:
+            db.session.delete(row)
+        db.session.commit()
 
 @codesubflags_namespace.route("/get/<challenge_id>")
 class Get(Resource):
@@ -546,15 +596,71 @@ class Get(Resource):
         if challenge is None:
             return {"success": False, "data": {"message": "Challenge not found"}}
         
+        history_size = _history_size(challenge)
         if challenge.run_file:
-            return {"success": True, "data": {"message": getContents(challenge.run_file)}}
+            return {
+                "success": True,
+                "data": {
+                    "message": getContents(challenge.run_file),
+                    "history_size": history_size,
+                },
+            }
         else:
             return {"success": False, "data": {"message": "No starting code found. Talk to an admin."}}
+
+
+@codesubflags_namespace.route("/attempts/<challenge_id>")
+class Attempts(Resource):
+    """
+    Returns the calling user's saved code attempts for this challenge so the
+    UI can restore previous runs. Newest first.
+    """
+
+    @authed_only
+    def get(self, challenge_id):
+        challenge = CodesubflagChallenge.query.filter_by(id=challenge_id).first()
+        if challenge is None:
+            return {"success": False, "data": {"message": "Challenge not found"}}
+
+        size = _history_size(challenge)
+        retention = _effective_retention(size)
+        if retention == 0:
+            return {"success": True, "data": {"history_size": size, "attempts": []}}
+
+        user = get_current_user()
+        if user is None:
+            return {"success": False, "data": {"message": "Not authenticated"}}
+
+        rows = (
+            CodesubflagAttempt.query
+            .filter_by(challenge_id=challenge.id, user_id=user.id)
+            .order_by(CodesubflagAttempt.date.desc())
+            .limit(retention)
+            .all()
+        )
+        return {
+            "success": True,
+            "data": {
+                "history_size": size,
+                "attempts": [
+                    {
+                        "id": r.id,
+                        "date": r.date.isoformat() if r.date else None,
+                        "code": r.code,
+                        "stdout": r.stdout,
+                        "stderr": r.stderr,
+                    }
+                    for r in rows
+                ],
+            },
+        }
 
 def load(app):
     upgrade()
     app.db.create_all()
     CHALLENGE_CLASSES["codesubflags"] = CodesubflagChallengeType
     register_plugin_assets_directory(app, base_path="/plugins/codesubflags/assets/")
+    # Expose the default so admin HTML forms don't have to hardcode it.
+    app.jinja_env.globals["CODESUBFLAGS_DEFAULT_HISTORY_SIZE"] = DEFAULT_HISTORY_SIZE
     # creates all necessairy endpoints
     CTFd_API_v1.add_namespace(codesubflags_namespace, '/codesubflags')

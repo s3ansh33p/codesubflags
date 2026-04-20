@@ -9,7 +9,24 @@
         <div class="col-12 form-group">
             <p class="mb-0">Enter your code here:</p>
             <textarea id="coderunner" class="challenge-input form-control form-group" type="text" rows="15" ></textarea>
-            <button class="btn btn-md btn-outline-secondary text-light w-100 mt-2" onclick="run_code()">Run Code</button>
+            <div class="row mt-2" id="coderunner-controls">
+                <div class="col-md-9">
+                    <button class="btn btn-md btn-outline-secondary text-light w-100" onclick="run_code()">Run Code</button>
+                </div>
+                <div class="col-md-3">
+                    <button id="coderunner-reset" class="btn btn-md btn-outline-warning text-light w-100 text-nowrap" type="button" onclick="reset_code_to_default()">Reset</button>
+                </div>
+            </div>
+            <div class="row mt-2" id="coderunner-history-row" style="display:none;">
+                <div class="col-md-9">
+                    <select id="coderunner-history" class="form-control">
+                        <option value="">Restore a previous run…</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <button class="btn btn-md btn-outline-info text-light w-100 h-100 text-nowrap" type="button" onclick="restore_selected_attempt()">Restore</button>
+                </div>
+            </div>
             <p class="mt-2 mb-0">Output:</p>
             <textarea id="coderunner-output" class="challenge-input form-control form-group" type="text" rows="5" readonly></textarea>
             <p class="mt-2 mb-0">Errors:</p>
