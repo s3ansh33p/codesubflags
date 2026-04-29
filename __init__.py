@@ -761,7 +761,7 @@ class Solve(Resource):
 
 def getContents(fileToConvert):
     fullpath = _safe_challenge_file_path(fileToConvert)
-    with open(fullpath, 'r') as file:
+    with open(fullpath, 'r') as file:  # nosec - path validated by _safe_challenge_file_path
         return file.read()
 
 @codesubflags_namespace.route("/run/<challenge_id>")
@@ -1168,9 +1168,9 @@ class ChallengeFilesIndex(Resource):
                 # so a stray click can't nuke a folder full of fixtures.
                 if os.listdir(fullpath):
                     return {"success": False, "data": {"message": "Directory not empty"}}, 400
-                os.rmdir(fullpath)
+                os.rmdir(fullpath)  # nosec - path validated by _safe_challenge_file_path
             else:
-                os.remove(fullpath)
+                os.remove(fullpath)  # nosec - path validated by _safe_challenge_file_path
         except OSError as e:
             return {"success": False, "data": {"message": f"Delete failed: {e}"}}, 500
         return {"success": True, "data": {}}
@@ -1219,7 +1219,7 @@ class ChallengeFilesUpload(Resource):
         tmp_path = target_path + ".upload-tmp"
         written = 0
         try:
-            with open(tmp_path, "wb") as out:
+            with open(tmp_path, "wb") as out:  # nosec - target_dir validated; basename via secure_filename + _FILE_NAME_RE + re-checked through _safe_challenge_file_path
                 while True:
                     chunk = upload.stream.read(64 * 1024)
                     if not chunk:
@@ -1227,14 +1227,14 @@ class ChallengeFilesUpload(Resource):
                     written += len(chunk)
                     if written > MAX_UPLOAD_BYTES:
                         out.close()
-                        os.remove(tmp_path)
+                        os.remove(tmp_path)  # nosec - same validated path
                         return {"success": False, "data": {"message": "File exceeds 10 MB limit"}}, 413
                     out.write(chunk)
-            os.replace(tmp_path, target_path)
+            os.replace(tmp_path, target_path)  # nosec - same validated path
         except OSError as e:
             try:
                 if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
+                    os.remove(tmp_path)  # nosec - same validated path
             except OSError:
                 pass
             return {"success": False, "data": {"message": f"Upload failed: {e}"}}, 500
@@ -1345,7 +1345,7 @@ class ChallengeFilesContents(Resource):
         if size > MAX_EDITABLE_BYTES:
             return {"success": False, "data": {"message": "File too large to edit in browser"}}, 413
         try:
-            with open(fullpath, "r", encoding="utf-8") as f:
+            with open(fullpath, "r", encoding="utf-8") as f:  # nosec - path validated by _safe_challenge_file_path
                 content = f.read()
         except (OSError, UnicodeDecodeError) as e:
             return {"success": False, "data": {"message": f"Read failed: {e}"}}, 500
