@@ -27,7 +27,7 @@ from CTFd.plugins.migrations import upgrade
 from CTFd.api import CTFd_API_v1
 from CTFd.utils.config import is_teams_mode
 from CTFd.utils.user import get_current_team, get_current_user
-from datetime import datetime
+from datetime import datetime, timezone
 
 RUNNER_URL = os.environ.get("RUNNER_URL", "http://piston_api:2000/api/v2/execute")
 
@@ -931,7 +931,7 @@ class Attempts(Resource):
                 "attempts": [
                     {
                         "id": r.id,
-                        "date": r.date.isoformat() if r.date else None,
+                        "date": r.date.replace(tzinfo=timezone.utc).isoformat() if r.date else None,
                         "code": r.code,
                         "stdout": r.stdout,
                         "stderr": r.stderr,
