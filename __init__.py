@@ -1,4 +1,4 @@
-from flask import Blueprint, abort, render_template, request, url_for # only needed for Blueprint import
+from flask import Blueprint, abort, current_app, render_template, request, url_for # only needed for Blueprint import
 from flask_restx import Namespace, Resource
 
 from CTFd.models import (
@@ -48,6 +48,58 @@ PACKAGES_URL = os.environ.get("PACKAGES_URL", f"{_piston_base_url()}/packages")
 
 DEFAULT_HISTORY_SIZE = 10
 MAX_HISTORY_CAP = 500
+
+# Shown to the user when a language row references a template that doesn't
+# exist on disk, or when a challenge has no language rows configured.
+NO_TEMPLATE_MESSAGE = "No starting code found. Talk to an admin."
+
+# Piston accepts language/version names from a finite set; we never need
+# anything outside this charset, so reject anything else early to avoid
+# forwarding garbage into the proxy endpoints.
+_LANG_VERSION_RE = re.compile(r"^[A-Za-z0-9_.+-]{1,64}$")
+
+
+def _challenge_files_root():
+    return os.path.realpath(os.path.join(os.path.dirname(__file__), "challenge_files"))
+
+
+def _version_sort_key(version):
+    # Lex-sort orders "3.10.0" before "3.9.0", which is the wrong reading for
+    # most package managers. Split on ".", convert numeric segments to ints,
+    # and fall back to the raw string for anything weird (e.g. "latest").
+    parts = []
+    for chunk in str(version or "").split("."):
+        try:
+            parts.append((0, int(chunk)))
+        except ValueError:
+            parts.append((1, chunk))
+    return tuple(parts)
+
+
+def _validated_lang_version(body):
+    # Shared input check for the package install/uninstall handlers — keeps
+    # garbage out of the piston request body and out of error messages.
+    language = (body.get("language") or "").strip()
+    version = (body.get("version") or "").strip()
+    if not language or not version:
+        return None, None, "language and version are required"
+    if not _LANG_VERSION_RE.match(language) or not _LANG_VERSION_RE.match(version):
+        return None, None, "language and version contain invalid characters"
+    return language, version, None
+
+
+def _safe_challenge_file_path(filename):
+    # Resolve `filename` against challenge_files/ and ensure the result stays
+    # under that directory. Filenames come from the admin languages editor;
+    # without this check, a value like "../../etc/passwd" would let getContents
+    # read arbitrary files on the host and serve them to participants.
+    if not filename:
+        raise ValueError("filename is required")
+    base = _challenge_files_root()
+    fullpath = os.path.realpath(os.path.join(base, filename))
+    if fullpath != base and not fullpath.startswith(base + os.sep):
+        raise ValueError("path escapes challenge_files")
+    return fullpath
 
 def _history_size(challenge):
     size = challenge.history_size
@@ -190,18 +242,12 @@ class CodesubflagHint(db.Model):
 
 def _pop_languages_payload(data):
     # The admin form posts a JSON-encoded list under "languages" (or, for
-    # multipart submits, leaves it absent). Pull it out of the dict in place
-    # so the calling code can keep iterating the remaining keys safely.
+    # multipart submits, leaves it absent). Callers must pass a plain dict —
+    # never an ImmutableMultiDict — so we can pop without try/except.
     raw = data.get("languages") if hasattr(data, "get") else None
     if raw is None:
         return None
-    # Drop from form-style mutable mappings; ImmutableMultiDicts (request.form)
-    # are converted to plain dicts upstream so this is safe.
-    if hasattr(data, "pop"):
-        try:
-            data.pop("languages", None)
-        except Exception:
-            pass
+    data.pop("languages", None)
     if isinstance(raw, str):
         if not raw.strip():
             return []
@@ -241,7 +287,17 @@ def _replace_challenge_languages(challenge_id, payload):
         run_file = (entry.get("run_file") or "").strip()
         if not (language and version and run_file):
             continue
+        if not _LANG_VERSION_RE.match(language) or not _LANG_VERSION_RE.match(version):
+            continue
         data_file = (entry.get("data_file") or "").strip() or None
+        # Reject path-traversal attempts at write time so the on-disk reads in
+        # /get and /run never have to second-guess what's stored in the DB.
+        try:
+            _safe_challenge_file_path(run_file)
+            if data_file:
+                _safe_challenge_file_path(data_file)
+        except ValueError:
+            continue
         sort_order = entry.get("sort_order")
         try:
             sort_order = int(sort_order) if sort_order is not None else idx
@@ -376,10 +432,18 @@ class CodesubflagChallengeType(BaseChallenge):
     def update(cls, challenge, request):
         # CTFd's BaseChallenge.update setattr's every key on the model, so the
         # languages JSON has to be pulled off the request payload first.
-        data = request.form or request.get_json()
-        if not isinstance(data, dict):
-            data = dict(data)
+        # request.form is an ImmutableMultiDict (a dict subclass) whose .pop
+        # raises TypeError, so always materialise a plain mutable copy before
+        # mutating it.
+        source = request.form or request.get_json() or {}
+        data = dict(source)
         languages_payload = _pop_languages_payload(data)
+
+        # Saving an empty list would leave the challenge with zero languages
+        # configured, which silently breaks /get and /run for participants.
+        # Reject the save and let the admin re-submit with at least one row.
+        if languages_payload == []:
+            abort(400, "At least one language is required.")
 
         for attr, value in data.items():
             setattr(challenge, attr, value)
@@ -653,16 +717,9 @@ class Solve(Resource):
         return {"success": True, "data": {"message": "Codesubflag solved", "solved": True}}
 
 def getContents(fileToConvert):
-    fullpath = os.path.join(os.path.dirname(__file__), "challenge_files", fileToConvert)
-    # get contents and convert to string
-    data = "";
+    fullpath = _safe_challenge_file_path(fileToConvert)
     with open(fullpath, 'r') as file:
-        data = file.read()
-        # remove all comments
-        # data = re.sub(r'#.*', '', data)
-        # remove all blank lines
-        # data = re.sub(r'\n\s*\n', '\n', data)
-    return data   
+        return file.read()
 
 @codesubflags_namespace.route("/run/<challenge_id>")
 class Run(Resource):
@@ -799,20 +856,30 @@ class Get(Resource):
             .all()
         )
         if not rows:
-            return {"success": False, "data": {"message": "No starting code found. Talk to an admin."}}
+            return {"success": False, "data": {"message": NO_TEMPLATE_MESSAGE}}
 
         languages = []
         for row in rows:
+            template_error = None
             try:
                 template = getContents(row.run_file)
-            except (FileNotFoundError, OSError):
+            except (FileNotFoundError, OSError, ValueError) as e:
+                # Log so admins notice the misconfiguration; surface a flag on
+                # the row so the UI can show the standard "Talk to an admin"
+                # message instead of an empty editor.
+                current_app.logger.warning(
+                    "codesubflags: failed to load run_file %r for challenge %s: %s",
+                    row.run_file, challenge.id, e,
+                )
                 template = ""
+                template_error = NO_TEMPLATE_MESSAGE
             languages.append({
                 "language": row.language,
                 "version": row.version,
                 "run_file": row.run_file,
                 "data_file": row.data_file or "",
                 "template": template,
+                "template_error": template_error,
                 "sort_order": row.sort_order or 0,
             })
 
@@ -905,7 +972,7 @@ class Runtimes(Resource):
                 "version": version,
                 "label": f"{language} - {version}",
             })
-        runtimes.sort(key=lambda x: (x["language"], x["version"]))
+        runtimes.sort(key=lambda x: (x["language"], _version_sort_key(x["version"])))
         return {"success": True, "data": runtimes}
 
 
@@ -939,16 +1006,15 @@ class Packages(Resource):
                 "version": version,
                 "installed": bool(entry.get("installed")),
             })
-        packages.sort(key=lambda x: (not x["installed"], x["language"], x["version"]))
+        packages.sort(key=lambda x: (not x["installed"], x["language"], _version_sort_key(x["version"])))
         return {"success": True, "data": packages}
 
     @admins_only
     def post(self):
         body = request.get_json(silent=True) or {}
-        language = (body.get("language") or "").strip()
-        version = (body.get("version") or "").strip()
-        if not language or not version:
-            return {"success": False, "data": {"message": "language and version are required"}}
+        language, version, err = _validated_lang_version(body)
+        if err:
+            return {"success": False, "data": {"message": err}}
         try:
             # Piston package installs can take 30-90s for some runtimes — let
             # the request stay open long enough rather than failing fast.
@@ -970,10 +1036,9 @@ class Packages(Resource):
     @admins_only
     def delete(self):
         body = request.get_json(silent=True) or {}
-        language = (body.get("language") or "").strip()
-        version = (body.get("version") or "").strip()
-        if not language or not version:
-            return {"success": False, "data": {"message": "language and version are required"}}
+        language, version, err = _validated_lang_version(body)
+        if err:
+            return {"success": False, "data": {"message": err}}
         try:
             r = requests.delete(
                 PACKAGES_URL,

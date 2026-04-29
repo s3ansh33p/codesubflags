@@ -28,13 +28,16 @@ function loadScript(src, integrity, crossorigin) {
     });
 }
 
-const CODEMIRROR_CORE_SRC       = "https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/codemirror.min.js";
-const CODEMIRROR_CORE_INTEGRITY = "sha512-8RnEqURPUc5aqFEN04aQEiPlSAdE0jlFS/9iGgUyNtwFnSKCXhmB6ZTNl7LnDtDWKabJIASzXrzD0K+LYexU9g==";
+// Top-level declarations use `var` rather than `const` because CTFd re-injects
+// the challenge-view script into the same realm when the user navigates back
+// to a challenge — `const` would throw "redeclaration" on the second parse.
+var CODEMIRROR_CORE_SRC       = "https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/codemirror.min.js";
+var CODEMIRROR_CORE_INTEGRITY = "sha512-8RnEqURPUc5aqFEN04aQEiPlSAdE0jlFS/9iGgUyNtwFnSKCXhmB6ZTNl7LnDtDWKabJIASzXrzD0K+LYexU9g==";
 
 // Map piston language id -> { src, integrity, mode }. Adding a new language
 // here is enough to make it editable in CodeMirror; the run path uses piston
 // directly so it doesn't need a frontend mode entry to function.
-const CODEMIRROR_MODES = {
+var CODEMIRROR_MODES = {
     "python": {
         src: "https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/mode/python/python.min.js",
         integrity: "sha512-2M0GdbU5OxkGYMhakED69bw0c1pW3Nb0PeF3+9d+SnwN1ryPx3wiDdNqK3gSM7KAU/pEV+2tFJFbMKjKAahOkQ==",
@@ -48,7 +51,7 @@ const CODEMIRROR_MODES = {
     }
 };
 
-const _modePromises = {};
+var _modePromises = _modePromises || {};
 
 function ensureCodeMirrorCore() {
     if (window.CodeMirror) return Promise.resolve();
@@ -158,8 +161,8 @@ function render_codesubflag_form(id, cs) {
 //   HISTORY_DISABLED (-1): no server retention, dropdown stays hidden
 //   0:                     unlimited (server still caps via MAX_HISTORY_CAP)
 //   N > 0:                 keep last N runs per user per challenge
-const HISTORY_DISABLED = -1;
-const DEFAULT_HISTORY_SIZE_FALLBACK = 10;
+var HISTORY_DISABLED = -1;
+var DEFAULT_HISTORY_SIZE_FALLBACK = 10;
 window.codesubflags = window.codesubflags || {
     editor: null,
     challenge_id: null,
@@ -235,6 +238,9 @@ function get_code_template() {
         const initialLang = languages[0];
         const draft = load_draft(challenge_id, initialLang.language, initialLang.version);
         const initial = (draft !== null && draft !== "") ? draft : (initialLang.template || "");
+        if (initialLang.template_error) {
+            CTFd.lib.$("#coderunner-errors").html(initialLang.template_error);
+        }
 
         const editor = CodeMirror.fromTextArea(document.getElementById("coderunner"), {
             lineNumbers: true,
@@ -328,6 +334,7 @@ async function on_language_change() {
     state.editor.save();
     state.editor.focus();
     state.editor.setCursor(state.editor.lineCount(), 0);
+    CTFd.lib.$("#coderunner-errors").html(target.template_error || "");
 }
 
 function refresh_history_dropdown() {
@@ -439,7 +446,7 @@ function run_code() {
         const run = (data && data.data && data.data.run) || {};
         CTFd.lib.$('#coderunner-output').html(run.output || "");
         CTFd.lib.$("#coderunner-errors").html(run.stderr || "");
-        if (run.signal == "SIGKILL" && run.stderr == "" && run.output == "") {
+        if (run.signal === "SIGKILL" && run.stderr === "" && run.output === "") {
             CTFd.lib.$("#coderunner-errors").html("Your code may have timed out. Please try again. (max execution time of 5 seconds)");
         }
         if (data && data.success === false && data.data && data.data.message) {

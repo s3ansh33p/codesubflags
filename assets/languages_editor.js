@@ -117,8 +117,15 @@
         while (node && node.tagName !== "FORM") node = node.parentNode;
         if (!node) return;
 
-        node.addEventListener("submit", function () {
-            hidden.value = JSON.stringify(serialize(container));
+        node.addEventListener("submit", function (event) {
+            const rows = serialize(container);
+            if (!rows.length) {
+                event.preventDefault();
+                event.stopPropagation();
+                alert("Add at least one language before saving.");
+                return;
+            }
+            hidden.value = JSON.stringify(rows);
         }, true);
     }
 
