@@ -9,6 +9,17 @@
         height: 50vh;
         min-height: 400px;
     }
+    /* Rainbow CSV column colours (dracula palette). The CSV mode emits
+       "string num0" .. "string num5" tokens which CodeMirror surfaces as
+       .cm-num0 .. .cm-num5 — we colour each one differently so adjacent
+       columns are visually distinct. */
+    #csf-editor-panel .cm-num0 { color: #ff79c6; }
+    #csf-editor-panel .cm-num1 { color: #50fa7b; }
+    #csf-editor-panel .cm-num2 { color: #bd93f9; }
+    #csf-editor-panel .cm-num3 { color: #ff5555; }
+    #csf-editor-panel .cm-num4 { color: #8be9fd; }
+    #csf-editor-panel .cm-num5 { color: #ffb86c; }
+    #csf-editor-panel .cm-delim { color: #44475a; }
 </style>
 {% endblock %}
 
@@ -105,12 +116,51 @@
     // the editor, so the listing page itself stays a single small request.
     var CM_CORE_SRC = "https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/codemirror.min.js";
     var CM_CORE_INTEGRITY = "sha512-8RnEqURPUc5aqFEN04aQEiPlSAdE0jlFS/9iGgUyNtwFnSKCXhmB6ZTNl7LnDtDWKabJIASzXrzD0K+LYexU9g==";
+    // Each entry either points at a CDN-hosted CodeMirror mode bundle (`src`
+    // + integrity), or supplies an `inline: true` flag indicating the mode is
+    // registered locally via defineLocalCsvMode() once core is loaded.
     var CM_MODES_BY_EXT = {
         ".py":   { src: "https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/mode/python/python.min.js", integrity: "sha512-2M0GdbU5OxkGYMhakED69bw0c1pW3Nb0PeF3+9d+SnwN1ryPx3wiDdNqK3gSM7KAU/pEV+2tFJFbMKjKAahOkQ==", mode: "python" },
-        ".java": { src: "https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/mode/clike/clike.min.js", integrity: "sha512-l8ZIWnQ3XHPRG3MQ8+hT1OffRSTrFwrph1j1oc1Fzc9UKVGef5XN9fdO0vm3nW0PRgQ9LJgck6ciG59m69rvfg==", mode: "text/x-java" }
+        ".java": { src: "https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/mode/clike/clike.min.js", integrity: "sha512-l8ZIWnQ3XHPRG3MQ8+hT1OffRSTrFwrph1j1oc1Fzc9UKVGef5XN9fdO0vm3nW0PRgQ9LJgck6ciG59m69rvfg==", mode: "text/x-java" },
+        ".csv":  { inline: "csv", mode: { name: "csv", rainbow: true, delimiter: "," } },
+        ".tsv":  { inline: "csv", mode: { name: "csv", rainbow: true, delimiter: "\t" } }
     };
     var _cmCorePromise = null;
     var _cmModePromises = {};
+    var _csvModeRegistered = false;
+
+    // Based on https://gist.github.com/rooks/6a13affb544ef8bc338b49af7d018318
+    // Emits "string num0".."num8" + "delim" tokens, styled in CSS above.
+    function defineLocalCsvMode() {
+        if (_csvModeRegistered || !window.CodeMirror) return;
+        _csvModeRegistered = true;
+        var QUOTE = '"';
+        var MAX = 6;
+        window.CodeMirror.defineMode("csv", function (_cmConfig, modeOpts) {
+            var delimiter = (modeOpts && modeOpts.delimiter) || ",";
+            var rainbow = !!(modeOpts && modeOpts.rainbow);
+            function token(state) { return rainbow ? ("string num" + state.num) : "string"; }
+            function tokenMain(stream, state) {
+                if (stream.sol()) state.num = 0;
+                var ch = stream.next();
+                if (ch === QUOTE) { state.tokenize = tokenQuotes; return token(state); }
+                if (ch === delimiter) { state.num = (state.num + 1) % MAX; return "delim"; }
+                return token(state);
+            }
+            function tokenQuotes(stream, state) {
+                var ch = stream.next();
+                if (ch === QUOTE) {
+                    if (stream.peek() === QUOTE) { stream.next(); }
+                    else { state.tokenize = tokenMain; }
+                }
+                return token(state);
+            }
+            return {
+                startState: function () { return { num: 0, tokenize: tokenMain }; },
+                token: function (stream, state) { return state.tokenize(stream, state); }
+            };
+        });
+    }
 
     function _loadScript(src, integrity, crossorigin) {
         return new Promise(function (resolve, reject) {
@@ -126,9 +176,10 @@
     }
 
     function ensureCmCore() {
-        if (window.CodeMirror) return Promise.resolve();
+        if (window.CodeMirror) { defineLocalCsvMode(); return Promise.resolve(); }
         if (!_cmCorePromise) {
-            _cmCorePromise = _loadScript(CM_CORE_SRC, CM_CORE_INTEGRITY, "anonymous");
+            _cmCorePromise = _loadScript(CM_CORE_SRC, CM_CORE_INTEGRITY, "anonymous")
+                .then(function () { defineLocalCsvMode(); });
         }
         return _cmCorePromise;
     }
@@ -136,6 +187,12 @@
     function ensureCmMode(ext) {
         var entry = CM_MODES_BY_EXT[ext];
         if (!entry) return Promise.resolve(null);
+        if (entry.inline) {
+            // Inline modes (e.g. CSV) are registered alongside core; nothing
+            // to fetch — just hand back the mode descriptor.
+            defineLocalCsvMode();
+            return Promise.resolve(entry.mode);
+        }
         if (!_cmModePromises[ext]) {
             _cmModePromises[ext] = _loadScript(entry.src, entry.integrity, "anonymous")
                 .then(function () { return entry.mode; })
@@ -147,11 +204,6 @@
     function extOf(path) {
         var i = path.lastIndexOf(".");
         return i === -1 ? "" : path.substring(i).toLowerCase();
-    }
-
-    function modeForPath(path) {
-        var entry = CM_MODES_BY_EXT[extOf(path)];
-        return entry ? entry.mode : null;
     }
 
     function setStatus(message, kind) {
