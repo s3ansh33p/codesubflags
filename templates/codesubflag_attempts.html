@@ -1,6 +1,14 @@
 {% extends "admin/base.html" %}
 
 {% block stylesheets %}
+<style>
+    td.solve-time, th.solve-time-col {
+        min-width: 8em;
+    }
+    td.solve-time > span[data-time] {
+        white-space: pre-line;
+    }
+</style>
 {% endblock %}
 
 {% block content %}
@@ -62,7 +70,7 @@
                 <thead>
                     <tr>
                         <th class="text-center"><b>ID</b></th>
-                        <th class="text-center"><b>Date</b></th>
+                        <th class="text-center solve-time-col"><b>Date</b></th>
                         <th><b>Challenge</b></th>
                         <th><b>User</b></th>
                         <th><b>Language</b></th>
@@ -76,7 +84,7 @@
                     <tr>
                         <td class="text-center">{{ a.id }}</td>
                         <td class="text-center solve-time">
-                            <span data-time="{{ a.date | isoformat }}">{{ a.date }}</span>
+                            <span data-time="{{ a.date | isoformat }}" data-time-format="MMMM Do,&#10;h:mm:ss A"></span>
                         </td>
                         <td>
                             <a href="{{ url_for('admin.challenges_detail', challenge_id=a.challenge_id) }}">
