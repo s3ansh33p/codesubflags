@@ -1,0 +1,446 @@
+{% extends "admin/base.html" %}
+
+{% block content %}
+
+<div class="jumbotron">
+    <div class="container">
+        <h1>Challenge Files</h1>
+        <p class="lead mb-0">
+            Browse, upload, and edit files in
+            <code>plugins/codesubflags/challenge_files/</code>.
+            <br>
+            Files here are referenced by name from challenge language rows.
+        </p>
+    </div>
+</div>
+
+<div class="container">
+    <ul class="nav nav-pills mb-3">
+        <li class="nav-item"><a class="nav-link" href="{{ url_for('codesubflags_admin.admin_attempts_listing') }}">Code Submissions</a></li>
+        <li class="nav-item"><a class="nav-link active" href="{{ url_for('codesubflags_admin.admin_files') }}">Challenge Files</a></li>
+        <li class="nav-item"><a class="nav-link" href="{{ url_for('codesubflags_admin.admin_settings') }}">Code Runner Settings</a></li>
+    </ul>
+    <div id="csf-status" class="alert alert-info" role="alert" style="display:none;"></div>
+
+    <div class="row mb-3">
+        <div class="col-md-12 d-flex align-items-center flex-wrap">
+            <button id="csf-upload-btn" type="button" class="btn btn-primary">
+                <i class="fas fa-upload"></i> Upload file
+            </button>
+            <button id="csf-mkdir-btn" type="button" class="btn btn-secondary ml-1">
+                <i class="fas fa-folder-plus"></i> New folder
+            </button>
+            <button id="csf-up-btn" type="button" class="btn btn-outline-secondary ml-1">
+                <i class="fas fa-level-up-alt"></i> Up
+            </button>
+            <input id="csf-upload-input" type="file" style="display:none;">
+            <nav aria-label="breadcrumb" class="flex-grow-1">
+                <ol id="csf-breadcrumb" class="breadcrumb mb-0 py-1 bg-transparent"></ol>
+            </nav>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-12">
+            <table class="table table-striped border">
+                <thead>
+                    <tr>
+                        <th style="width: 45%;">Name</th>
+                        <th>Size</th>
+                        <th>Modified</th>
+                        <th class="text-right">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="csf-files-body">
+                    <tr><td colspan="4" class="text-center text-muted">Loading&hellip;</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div id="csf-editor-panel" class="row mt-4" style="display:none;">
+        <div class="col-md-12">
+            <h4>Editing <code id="csf-editor-path"></code></h4>
+            <textarea id="csf-editor-textarea" class="form-control" rows="20" spellcheck="false" style="font-family: monospace;"></textarea>
+            <div class="mt-2">
+                <button id="csf-editor-save" type="button" class="btn btn-success">Save</button>
+                <button id="csf-editor-cancel" type="button" class="btn btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    var statusEl = document.getElementById("csf-status");
+    var bodyEl = document.getElementById("csf-files-body");
+    var crumbEl = document.getElementById("csf-breadcrumb");
+    var uploadBtn = document.getElementById("csf-upload-btn");
+    var uploadInput = document.getElementById("csf-upload-input");
+    var mkdirBtn = document.getElementById("csf-mkdir-btn");
+    var upBtn = document.getElementById("csf-up-btn");
+    var editorPanel = document.getElementById("csf-editor-panel");
+    var editorPath = document.getElementById("csf-editor-path");
+    var editorArea = document.getElementById("csf-editor-textarea");
+    var editorSave = document.getElementById("csf-editor-save");
+    var editorCancel = document.getElementById("csf-editor-cancel");
+
+    var currentPath = "";
+    var currentEntries = [];
+
+    function setStatus(message, kind) {
+        if (!message) { statusEl.style.display = "none"; return; }
+        statusEl.className = "alert alert-" + (kind || "info");
+        statusEl.textContent = message;
+        statusEl.style.display = "";
+    }
+
+    function fmtSize(bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+        return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+    }
+
+    function fmtTime(epoch) {
+        try { return new Date(epoch * 1000).toLocaleString(); }
+        catch (e) { return ""; }
+    }
+
+    function joinPath(parent, name) {
+        return parent ? parent + "/" + name : name;
+    }
+
+    function renderBreadcrumb(path) {
+        crumbEl.innerHTML = "";
+        var rootLi = document.createElement("li");
+        rootLi.className = "breadcrumb-item";
+        var rootLink = document.createElement("a");
+        rootLink.href = "#";
+        rootLink.textContent = "challenge_files";
+        rootLink.onclick = function (e) { e.preventDefault(); navigate(""); };
+        rootLi.appendChild(rootLink);
+        crumbEl.appendChild(rootLi);
+
+        if (!path) return;
+        var parts = path.split("/");
+        var built = "";
+        for (var i = 0; i < parts.length; i++) {
+            built = built ? built + "/" + parts[i] : parts[i];
+            var li = document.createElement("li");
+            li.className = "breadcrumb-item";
+            if (i === parts.length - 1) {
+                li.classList.add("active");
+                li.textContent = parts[i];
+            } else {
+                var a = document.createElement("a");
+                a.href = "#";
+                a.textContent = parts[i];
+                (function (target) {
+                    a.onclick = function (e) { e.preventDefault(); navigate(target); };
+                })(built);
+                li.appendChild(a);
+            }
+            crumbEl.appendChild(li);
+        }
+    }
+
+    function emptyRow(message) {
+        var tr = document.createElement("tr");
+        var td = document.createElement("td");
+        td.colSpan = 4;
+        td.className = "text-center text-muted";
+        td.textContent = message;
+        tr.appendChild(td);
+        return tr;
+    }
+
+    function actionButton(iconClass, title, kind, onclick) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn btn-sm " + kind + " ml-1";
+        btn.title = title;
+        btn.setAttribute("aria-label", title);
+        var i = document.createElement("i");
+        i.className = "fas " + iconClass;
+        btn.appendChild(i);
+        btn.onclick = onclick;
+        return btn;
+    }
+
+    function renderEntry(entry) {
+        var tr = document.createElement("tr");
+
+        var nameTd = document.createElement("td");
+        var icon = document.createElement("i");
+        icon.className = entry.type === "dir" ? "fas fa-folder text-warning" : "fas fa-file text-muted";
+        icon.style.marginRight = "0.5em";
+        nameTd.appendChild(icon);
+        if (entry.type === "dir") {
+            var a = document.createElement("a");
+            a.href = "#";
+            a.textContent = entry.name;
+            a.onclick = function (e) { e.preventDefault(); navigate(joinPath(currentPath, entry.name)); };
+            nameTd.appendChild(a);
+        } else {
+            nameTd.appendChild(document.createTextNode(entry.name));
+        }
+        tr.appendChild(nameTd);
+
+        var sizeTd = document.createElement("td");
+        sizeTd.textContent = entry.type === "dir" ? "" : fmtSize(entry.size);
+        tr.appendChild(sizeTd);
+
+        var mtimeTd = document.createElement("td");
+        mtimeTd.textContent = fmtTime(entry.mtime);
+        tr.appendChild(mtimeTd);
+
+        var actTd = document.createElement("td");
+        actTd.className = "text-right";
+        var fullRel = joinPath(currentPath, entry.name);
+        if (entry.type === "file") {
+            actTd.appendChild(actionButton("fa-download", "Download", "btn-outline-primary", function () {
+                downloadFile(fullRel);
+            }));
+            if (entry.editable) {
+                actTd.appendChild(actionButton("fa-edit", "Edit", "btn-outline-secondary", function () {
+                    openEditor(fullRel);
+                }));
+            }
+        }
+        actTd.appendChild(actionButton("fa-i-cursor", "Rename", "btn-outline-secondary", function () {
+            renameEntry(fullRel, entry.name);
+        }));
+        actTd.appendChild(actionButton("fa-trash", "Delete", "btn-outline-danger", function () {
+            deleteEntry(fullRel, entry.type);
+        }));
+        tr.appendChild(actTd);
+
+        return tr;
+    }
+
+    function navigate(path) {
+        currentPath = path || "";
+        closeEditor();
+        listDir();
+    }
+
+    function listDir() {
+        var url = "/api/v1/codesubflags/files?path=" + encodeURIComponent(currentPath);
+        CTFd.fetch(url, { method: "GET" })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+            .then(function (res) {
+                bodyEl.innerHTML = "";
+                if (!res.body.success) {
+                    bodyEl.appendChild(emptyRow((res.body.data && res.body.data.message) || "Failed to load"));
+                    setStatus((res.body.data && res.body.data.message) || "Failed to load", "danger");
+                    return;
+                }
+                var data = res.body.data;
+                currentPath = data.path || "";
+                currentEntries = data.entries || [];
+                renderBreadcrumb(currentPath);
+                upBtn.disabled = !currentPath;
+                if (!currentEntries.length) {
+                    bodyEl.appendChild(emptyRow("Empty folder."));
+                } else {
+                    currentEntries.forEach(function (entry) {
+                        bodyEl.appendChild(renderEntry(entry));
+                    });
+                }
+                setStatus("");
+            })
+            .catch(function (err) {
+                bodyEl.innerHTML = "";
+                bodyEl.appendChild(emptyRow("Error: " + err));
+            });
+    }
+
+    function entryByName(name) {
+        for (var i = 0; i < currentEntries.length; i++) {
+            if (currentEntries[i].name === name) return currentEntries[i];
+        }
+        return null;
+    }
+
+    function uploadFile(file, overwrite) {
+        var fd = new FormData();
+        fd.append("path", currentPath);
+        fd.append("file", file);
+        fd.append("overwrite", overwrite ? "true" : "false");
+        setStatus("Uploading " + file.name + "…", "info");
+        CTFd.fetch("/api/v1/codesubflags/files/upload", {
+            method: "POST",
+            body: fd,
+        })
+            .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); })
+            .then(function (res) {
+                if (res.body.success) {
+                    setStatus("Uploaded " + file.name + ".", "success");
+                    listDir();
+                    return;
+                }
+                if (res.body.data && res.body.data.code === "exists") {
+                    if (window.confirm("'" + file.name + "' already exists. Overwrite?")) {
+                        uploadFile(file, true);
+                    } else {
+                        setStatus("Upload cancelled.", "warning");
+                    }
+                    return;
+                }
+                setStatus("Upload failed: " + ((res.body.data && res.body.data.message) || "unknown"), "danger");
+            })
+            .catch(function (err) {
+                setStatus("Upload failed: " + err, "danger");
+            });
+    }
+
+    uploadBtn.onclick = function () { uploadInput.click(); };
+    uploadInput.onchange = function () {
+        var file = uploadInput.files && uploadInput.files[0];
+        if (!file) return;
+        if (file.size > 10 * 1024 * 1024) {
+            setStatus("File exceeds 10 MB limit.", "danger");
+            uploadInput.value = "";
+            return;
+        }
+        // Pre-check against current listing so we can prompt before sending.
+        var existing = entryByName(file.name);
+        if (existing) {
+            if (existing.type === "dir") {
+                setStatus("A folder with that name already exists.", "danger");
+                uploadInput.value = "";
+                return;
+            }
+            if (!window.confirm("'" + file.name + "' already exists. Overwrite?")) {
+                uploadInput.value = "";
+                return;
+            }
+            uploadFile(file, true);
+        } else {
+            uploadFile(file, false);
+        }
+        uploadInput.value = "";
+    };
+
+    mkdirBtn.onclick = function () {
+        var name = window.prompt("New folder name (letters, numbers, . _ -):");
+        if (!name) return;
+        CTFd.fetch("/api/v1/codesubflags/files/mkdir", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: currentPath, name: name }),
+        })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data.success) {
+                    setStatus("Folder created.", "success");
+                    listDir();
+                } else {
+                    setStatus("Failed: " + ((data.data && data.data.message) || "unknown"), "danger");
+                }
+            });
+    };
+
+    upBtn.onclick = function () {
+        if (!currentPath) return;
+        var idx = currentPath.lastIndexOf("/");
+        navigate(idx === -1 ? "" : currentPath.substring(0, idx));
+    };
+
+    function downloadFile(rel) {
+        var root = (window.init && window.init.urlRoot) || "";
+        var url = root + "/api/v1/codesubflags/files/download?path=" + encodeURIComponent(rel);
+        window.location.href = url;
+    }
+
+    function renameEntry(rel, currentName) {
+        var newName = window.prompt("Rename '" + currentName + "' to:", currentName);
+        if (!newName || newName === currentName) return;
+        var parent = currentPath;
+        var newRel = joinPath(parent, newName);
+        CTFd.fetch("/api/v1/codesubflags/files/rename", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ from: rel, to: newRel }),
+        })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data.success) {
+                    setStatus("Renamed.", "success");
+                    listDir();
+                } else {
+                    setStatus("Rename failed: " + ((data.data && data.data.message) || "unknown"), "danger");
+                }
+            });
+    }
+
+    function deleteEntry(rel, type) {
+        var label = type === "dir" ? "folder" : "file";
+        if (!window.confirm("Delete this " + label + "? This cannot be undone.")) return;
+        CTFd.fetch("/api/v1/codesubflags/files?path=" + encodeURIComponent(rel), {
+            method: "DELETE",
+        })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data.success) {
+                    setStatus("Deleted.", "success");
+                    listDir();
+                } else {
+                    setStatus("Delete failed: " + ((data.data && data.data.message) || "unknown"), "danger");
+                }
+            });
+    }
+
+    var editorRel = null;
+    function openEditor(rel) {
+        CTFd.fetch("/api/v1/codesubflags/files/contents?path=" + encodeURIComponent(rel), {
+            method: "GET",
+        })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (!data.success) {
+                    setStatus("Open failed: " + ((data.data && data.data.message) || "unknown"), "danger");
+                    return;
+                }
+                editorRel = rel;
+                editorPath.textContent = rel;
+                editorArea.value = data.data.content || "";
+                editorPanel.style.display = "";
+                editorArea.focus();
+                window.scrollTo(0, document.body.scrollHeight);
+            });
+    }
+
+    function closeEditor() {
+        editorRel = null;
+        editorPath.textContent = "";
+        editorArea.value = "";
+        editorPanel.style.display = "none";
+    }
+
+    editorSave.onclick = function () {
+        if (!editorRel) return;
+        CTFd.fetch("/api/v1/codesubflags/files/contents", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: editorRel, content: editorArea.value }),
+        })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data.success) {
+                    setStatus("Saved.", "success");
+                    listDir();
+                    closeEditor();
+                } else {
+                    setStatus("Save failed: " + ((data.data && data.data.message) || "unknown"), "danger");
+                }
+            });
+    };
+
+    editorCancel.onclick = function () { closeEditor(); };
+
+    document.addEventListener("DOMContentLoaded", function () { navigate(""); });
+})();
+</script>
+
+{% endblock %}

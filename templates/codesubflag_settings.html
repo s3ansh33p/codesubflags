@@ -16,6 +16,11 @@
 </div>
 
 <div class="container">
+    <ul class="nav nav-pills mb-3">
+        <li class="nav-item"><a class="nav-link" href="{{ url_for('codesubflags_admin.admin_attempts_listing') }}">Code Submissions</a></li>
+        <li class="nav-item"><a class="nav-link" href="{{ url_for('codesubflags_admin.admin_files') }}">Challenge Files</a></li>
+        <li class="nav-item"><a class="nav-link active" href="{{ url_for('codesubflags_admin.admin_settings') }}">Code Runner Settings</a></li>
+    </ul>
     <div id="csf-status" class="alert alert-info" role="alert" style="display:none;"></div>
 
     <div class="row">

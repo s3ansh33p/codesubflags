@@ -1,5 +1,6 @@
-from flask import Blueprint, abort, current_app, render_template, request, url_for # only needed for Blueprint import
+from flask import Blueprint, abort, current_app, render_template, request, send_from_directory, url_for # only needed for Blueprint import
 from flask_restx import Namespace, Resource
+from werkzeug.utils import secure_filename
 
 from CTFd.models import (
     ChallengeFiles,
@@ -100,6 +101,48 @@ def _safe_challenge_file_path(filename):
     if fullpath != base and not fullpath.startswith(base + os.sep):
         raise ValueError("path escapes challenge_files")
     return fullpath
+
+
+# Hard cap on a single uploaded file. Keeps a runaway upload from filling the
+# host disk and matches the limit promised in the admin UI.
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+# Extensions safe to load into the inline text editor. Anything outside this
+# list is treated as binary and only available via Download/Delete/Rename.
+_TEXT_FILE_EXTS = frozenset({
+    ".py", ".java", ".txt", ".csv", ".md", ".json", ".log",
+})
+
+# Inline editor cap. Anything bigger should be edited offline and re-uploaded.
+MAX_EDITABLE_BYTES = 1 * 1024 * 1024
+
+# Directory and rename names: ASCII alnum plus . _ - only, no path separators.
+_FILE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _is_text_file(path):
+    return os.path.splitext(path)[1].lower() in _TEXT_FILE_EXTS
+
+
+def _safe_challenge_dir_path(relpath):
+    # Same idea as _safe_challenge_file_path but tolerates the empty/"." case
+    # by mapping it to the root itself. Used for directory-targeted endpoints
+    # (list, upload-target, mkdir-parent).
+    base = _challenge_files_root()
+    rel = (relpath or "").strip().lstrip("/")
+    if rel in ("", "."):
+        return base
+    fullpath = os.path.realpath(os.path.join(base, rel))
+    if fullpath != base and not fullpath.startswith(base + os.sep):
+        raise ValueError("path escapes challenge_files")
+    return fullpath
+
+
+def _relpath_under_root(fullpath):
+    base = _challenge_files_root()
+    if fullpath == base:
+        return ""
+    return os.path.relpath(fullpath, base).replace(os.sep, "/")
 
 def _history_size(challenge):
     size = challenge.history_size
@@ -1056,6 +1099,294 @@ class Packages(Resource):
         return {"success": True, "data": payload}
 
 
+def _list_dir_entries(fullpath):
+    entries = []
+    for name in sorted(os.listdir(fullpath)):
+        # os.listdir already filters "." and ".." but skip dotfiles to keep
+        # the editor focused on real challenge assets.
+        if name.startswith("."):
+            continue
+        child = os.path.join(fullpath, name)
+        try:
+            st = os.stat(child)
+        except OSError:
+            continue
+        is_dir = os.path.isdir(child)
+        entries.append({
+            "name": name,
+            "type": "dir" if is_dir else "file",
+            "size": 0 if is_dir else st.st_size,
+            "mtime": int(st.st_mtime),
+            "editable": (not is_dir) and _is_text_file(name) and st.st_size <= MAX_EDITABLE_BYTES,
+        })
+    # Directories first, then files; both alphabetised.
+    entries.sort(key=lambda e: (e["type"] != "dir", e["name"].lower()))
+    return entries
+
+
+@codesubflags_namespace.route("/files")
+class ChallengeFilesIndex(Resource):
+    """List directory contents and delete individual files/empty dirs."""
+
+    @admins_only
+    def get(self):
+        rel = request.args.get("path", "") or ""
+        try:
+            fullpath = _safe_challenge_dir_path(rel)
+        except ValueError as e:
+            return {"success": False, "data": {"message": str(e)}}, 400
+        if not os.path.isdir(fullpath):
+            return {"success": False, "data": {"message": "Not a directory"}}, 404
+        normalised = _relpath_under_root(fullpath)
+        parent = None
+        if normalised:
+            parent_rel = os.path.dirname(normalised)
+            parent = parent_rel  # "" means root
+        return {
+            "success": True,
+            "data": {
+                "path": normalised,
+                "parent": parent,
+                "entries": _list_dir_entries(fullpath),
+            },
+        }
+
+    @admins_only
+    def delete(self):
+        rel = request.args.get("path", "") or ""
+        try:
+            fullpath = _safe_challenge_file_path(rel)
+        except ValueError as e:
+            return {"success": False, "data": {"message": str(e)}}, 400
+        if fullpath == _challenge_files_root():
+            return {"success": False, "data": {"message": "Cannot delete the challenge_files root"}}, 400
+        if not os.path.exists(fullpath):
+            return {"success": False, "data": {"message": "Not found"}}, 404
+        try:
+            if os.path.isdir(fullpath):
+                # Refuse non-empty directories; admin must clear contents first
+                # so a stray click can't nuke a folder full of fixtures.
+                if os.listdir(fullpath):
+                    return {"success": False, "data": {"message": "Directory not empty"}}, 400
+                os.rmdir(fullpath)
+            else:
+                os.remove(fullpath)
+        except OSError as e:
+            return {"success": False, "data": {"message": f"Delete failed: {e}"}}, 500
+        return {"success": True, "data": {}}
+
+
+@codesubflags_namespace.route("/files/upload")
+class ChallengeFilesUpload(Resource):
+    @admins_only
+    def post(self):
+        rel = request.form.get("path", "") or ""
+        overwrite = (request.form.get("overwrite") or "").lower() == "true"
+        upload = request.files.get("file")
+        if upload is None or not upload.filename:
+            return {"success": False, "data": {"message": "No file uploaded"}}, 400
+
+        # Fast reject before reading the body when the client tells us the size.
+        if request.content_length is not None and request.content_length > MAX_UPLOAD_BYTES + 4096:
+            return {"success": False, "data": {"message": "File exceeds 10 MB limit"}}, 413
+
+        try:
+            target_dir = _safe_challenge_dir_path(rel)
+        except ValueError as e:
+            return {"success": False, "data": {"message": str(e)}}, 400
+        if not os.path.isdir(target_dir):
+            return {"success": False, "data": {"message": "Target directory does not exist"}}, 404
+
+        safe_name = secure_filename(upload.filename)
+        if not safe_name or not _FILE_NAME_RE.match(safe_name):
+            return {"success": False, "data": {"message": "Invalid filename"}}, 400
+
+        target_path = os.path.join(target_dir, safe_name)
+        # Re-validate that the joined path stays under root (defence in depth).
+        try:
+            _safe_challenge_file_path(_relpath_under_root(target_dir) + "/" + safe_name if _relpath_under_root(target_dir) else safe_name)
+        except ValueError as e:
+            return {"success": False, "data": {"message": str(e)}}, 400
+
+        if os.path.exists(target_path) and not overwrite:
+            return {"success": False, "data": {"message": "File exists", "code": "exists"}}, 409
+        if os.path.isdir(target_path):
+            return {"success": False, "data": {"message": "A directory with this name exists"}}, 400
+
+        # Stream to a temp file in the same dir, count bytes, then atomically
+        # replace. Aborts mid-stream if the upload exceeds the limit so we
+        # don't waste disk on an oversized file.
+        tmp_path = target_path + ".upload-tmp"
+        written = 0
+        try:
+            with open(tmp_path, "wb") as out:
+                while True:
+                    chunk = upload.stream.read(64 * 1024)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > MAX_UPLOAD_BYTES:
+                        out.close()
+                        os.remove(tmp_path)
+                        return {"success": False, "data": {"message": "File exceeds 10 MB limit"}}, 413
+                    out.write(chunk)
+            os.replace(tmp_path, target_path)
+        except OSError as e:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            return {"success": False, "data": {"message": f"Upload failed: {e}"}}, 500
+        return {"success": True, "data": {"name": safe_name, "size": written}}
+
+
+@codesubflags_namespace.route("/files/download")
+class ChallengeFilesDownload(Resource):
+    @admins_only
+    def get(self):
+        rel = request.args.get("path", "") or ""
+        try:
+            fullpath = _safe_challenge_file_path(rel)
+        except ValueError as e:
+            return {"success": False, "data": {"message": str(e)}}, 400
+        if fullpath == _challenge_files_root() or not os.path.isfile(fullpath):
+            return {"success": False, "data": {"message": "Not a file"}}, 404
+        relative = _relpath_under_root(fullpath)
+        return send_from_directory(
+            _challenge_files_root(),
+            relative,
+            as_attachment=True,
+        )
+
+
+@codesubflags_namespace.route("/files/mkdir")
+class ChallengeFilesMkdir(Resource):
+    @admins_only
+    def post(self):
+        body = request.get_json(silent=True) or {}
+        rel = (body.get("path") or "").strip()
+        name = (body.get("name") or "").strip()
+        if not name or not _FILE_NAME_RE.match(name) or len(name) > 64:
+            return {"success": False, "data": {"message": "Invalid folder name"}}, 400
+        try:
+            parent = _safe_challenge_dir_path(rel)
+        except ValueError as e:
+            return {"success": False, "data": {"message": str(e)}}, 400
+        if not os.path.isdir(parent):
+            return {"success": False, "data": {"message": "Parent directory does not exist"}}, 404
+        target = os.path.join(parent, name)
+        try:
+            # Re-validate the joined path against root.
+            _safe_challenge_dir_path(_relpath_under_root(target))
+        except ValueError as e:
+            return {"success": False, "data": {"message": str(e)}}, 400
+        if os.path.exists(target):
+            return {"success": False, "data": {"message": "Already exists"}}, 409
+        try:
+            os.mkdir(target)
+        except OSError as e:
+            return {"success": False, "data": {"message": f"mkdir failed: {e}"}}, 500
+        return {"success": True, "data": {"name": name}}
+
+
+@codesubflags_namespace.route("/files/rename")
+class ChallengeFilesRename(Resource):
+    @admins_only
+    def post(self):
+        body = request.get_json(silent=True) or {}
+        src_rel = (body.get("from") or "").strip()
+        dst_rel = (body.get("to") or "").strip()
+        if not src_rel or not dst_rel:
+            return {"success": False, "data": {"message": "from and to are required"}}, 400
+        try:
+            src = _safe_challenge_file_path(src_rel)
+            dst = _safe_challenge_file_path(dst_rel)
+        except ValueError as e:
+            return {"success": False, "data": {"message": str(e)}}, 400
+        root = _challenge_files_root()
+        if src == root or dst == root:
+            return {"success": False, "data": {"message": "Cannot rename the root"}}, 400
+        if not os.path.exists(src):
+            return {"success": False, "data": {"message": "Source not found"}}, 404
+        if os.path.exists(dst):
+            return {"success": False, "data": {"message": "Destination exists"}}, 409
+        # The destination's basename must match the safe-name regex; anything
+        # like control chars or spaces gets rejected here.
+        if not _FILE_NAME_RE.match(os.path.basename(dst)):
+            return {"success": False, "data": {"message": "Invalid destination name"}}, 400
+        # Ensure the destination's parent directory exists.
+        if not os.path.isdir(os.path.dirname(dst)):
+            return {"success": False, "data": {"message": "Destination directory does not exist"}}, 404
+        try:
+            os.rename(src, dst)
+        except OSError as e:
+            return {"success": False, "data": {"message": f"Rename failed: {e}"}}, 500
+        return {"success": True, "data": {}}
+
+
+@codesubflags_namespace.route("/files/contents")
+class ChallengeFilesContents(Resource):
+    @admins_only
+    def get(self):
+        rel = request.args.get("path", "") or ""
+        try:
+            fullpath = _safe_challenge_file_path(rel)
+        except ValueError as e:
+            return {"success": False, "data": {"message": str(e)}}, 400
+        if fullpath == _challenge_files_root() or not os.path.isfile(fullpath):
+            return {"success": False, "data": {"message": "Not a file"}}, 404
+        if not _is_text_file(fullpath):
+            return {"success": False, "data": {"message": "Not a text file"}}, 400
+        try:
+            size = os.path.getsize(fullpath)
+        except OSError as e:
+            return {"success": False, "data": {"message": f"Stat failed: {e}"}}, 500
+        if size > MAX_EDITABLE_BYTES:
+            return {"success": False, "data": {"message": "File too large to edit in browser"}}, 413
+        try:
+            with open(fullpath, "r", encoding="utf-8") as f:
+                content = f.read()
+        except (OSError, UnicodeDecodeError) as e:
+            return {"success": False, "data": {"message": f"Read failed: {e}"}}, 500
+        return {"success": True, "data": {"content": content, "size": size}}
+
+    @admins_only
+    def put(self):
+        body = request.get_json(silent=True) or {}
+        rel = (body.get("path") or "").strip()
+        content = body.get("content")
+        if content is None or not isinstance(content, str):
+            return {"success": False, "data": {"message": "content must be a string"}}, 400
+        if len(content.encode("utf-8")) > MAX_EDITABLE_BYTES:
+            return {"success": False, "data": {"message": "Content too large"}}, 413
+        try:
+            fullpath = _safe_challenge_file_path(rel)
+        except ValueError as e:
+            return {"success": False, "data": {"message": str(e)}}, 400
+        if fullpath == _challenge_files_root():
+            return {"success": False, "data": {"message": "Invalid target"}}, 400
+        if not _is_text_file(fullpath):
+            return {"success": False, "data": {"message": "Not a text file"}}, 400
+        if os.path.isdir(fullpath):
+            return {"success": False, "data": {"message": "Target is a directory"}}, 400
+        if not os.path.isdir(os.path.dirname(fullpath)):
+            return {"success": False, "data": {"message": "Parent directory missing"}}, 404
+        tmp_path = fullpath + ".edit-tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.replace(tmp_path, fullpath)
+        except OSError as e:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            return {"success": False, "data": {"message": f"Write failed: {e}"}}, 500
+        return {"success": True, "data": {"size": os.path.getsize(fullpath)}}
+
+
 def load(app):
     upgrade()
     app.db.create_all()
@@ -1124,6 +1455,11 @@ def load(app):
     @admins_only
     def admin_settings():
         return render_template("codesubflag_settings.html")
+
+    @codesubflags_admin.route("/admin/codesubflags/files")
+    @admins_only
+    def admin_files():
+        return render_template("codesubflag_files.html")
 
     @codesubflags_admin.route("/admin/codesubflags/<int:attempt_id>")
     @admins_only
