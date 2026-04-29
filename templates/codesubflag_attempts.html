@@ -23,9 +23,9 @@
         <li class="nav-item"><a class="nav-link" href="{{ url_for('codesubflags_admin.admin_settings') }}">Code Runner Settings</a></li>
     </ul>
     <div class="row">
-        <div class="col-md-12">
+        <div class="col-md-12 p-0">
             <form method="GET" class="form-inline">
-                <div class="form-group col-md-5 pr-0">
+                <div class="form-group col-md-5 mb-3">
                     <select name="challenge_id" class="form-control custom-select w-100">
                         <option value="">All challenges</option>
                         {% for c in challenges %}
@@ -35,7 +35,7 @@
                         {% endfor %}
                     </select>
                 </div>
-                <div class="form-group col-md-5">
+                <div class="form-group col-md-5 mb-3">
                     <select name="user_id" class="form-control custom-select w-100">
                         <option value="">All users</option>
                         {% for u in users %}
@@ -45,7 +45,7 @@
                         {% endfor %}
                     </select>
                 </div>
-                <div class="form-group col-md-2">
+                <div class="form-group col-md-2 mb-3">
                     <button type="submit" class="btn btn-primary w-100">
                         <i class="fas fa-search" aria-hidden="true"></i> Filter
                     </button>
@@ -54,7 +54,7 @@
         </div>
     </div>
 
-    <hr>
+    <hr class="mt-0">
 
     <div class="row">
         <div class="col-md-12 table-responsive">
