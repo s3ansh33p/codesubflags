@@ -8,7 +8,15 @@ Uses [Piston](https://github.com/engineer-man/piston) for sandboxing and executi
 2. Start container with `docker compose up -d api`
 3. Attach to your ctfd network such as with `docker network connect ctfd_atr2025_default piston_api`
 4. Check it's accessible such as with `docker exec -it ctfd_atr2025-nginx-1 curl http://piston_api:2000/api/v2/runtimes`
-5. Sign in to CTFd as admin and visit **Plugins > Code Runner** to install
+5. Mount `challenge_files/` as a writable volume on the CTFd container so admin
+   uploads/edits persist outside the read-only repo bind. Add to the `ctfd`
+   service in `docker-compose.yml`:
+
+   ```yaml
+   volumes:
+     - ./CTFd/plugins/codesubflags/challenge_files:/opt/CTFd/CTFd/plugins/codesubflags/challenge_files
+   ```
+6. Sign in to CTFd as admin and visit **Plugins > Code Runner** to install
    the language runtimes you want challenges to use (Python, Java, etc.). The
    piston CLI still works as a fallback if you'd rather install runtimes
    from the host.
