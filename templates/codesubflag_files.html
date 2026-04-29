@@ -1,5 +1,17 @@
 {% extends "admin/base.html" %}
 
+{% block stylesheets %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/codemirror.min.css" integrity="sha512-uf06llspW44/LZpHzHT6qBOIVODjWtv4MxCricRxkzvopAlSWnTf6hpZTFxuuZcuNE9CBQhqE0Seu1CoRk84nQ==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/theme/dracula.min.css" integrity="sha512-gFMl3u9d0xt3WR8ZeW05MWm3yZ+ZfgsBVXLSOiFz2xeVrZ8Neg0+V1kkRIo9LikyA/T9HuS91kDfc2XWse0K0A==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+<style>
+    /* Give the editor a comfortable working height even for short files. */
+    #csf-editor-panel .CodeMirror {
+        height: 50vh;
+        min-height: 400px;
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 
 <div class="jumbotron">
@@ -87,6 +99,60 @@
 
     var currentPath = "";
     var currentEntries = [];
+    var cmInstance = null;
+
+    // CodeMirror is loaded on demand the first time the user opens a file in
+    // the editor, so the listing page itself stays a single small request.
+    var CM_CORE_SRC = "https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/codemirror.min.js";
+    var CM_CORE_INTEGRITY = "sha512-8RnEqURPUc5aqFEN04aQEiPlSAdE0jlFS/9iGgUyNtwFnSKCXhmB6ZTNl7LnDtDWKabJIASzXrzD0K+LYexU9g==";
+    var CM_MODES_BY_EXT = {
+        ".py":   { src: "https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/mode/python/python.min.js", integrity: "sha512-2M0GdbU5OxkGYMhakED69bw0c1pW3Nb0PeF3+9d+SnwN1ryPx3wiDdNqK3gSM7KAU/pEV+2tFJFbMKjKAahOkQ==", mode: "python" },
+        ".java": { src: "https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/mode/clike/clike.min.js", integrity: "sha512-l8ZIWnQ3XHPRG3MQ8+hT1OffRSTrFwrph1j1oc1Fzc9UKVGef5XN9fdO0vm3nW0PRgQ9LJgck6ciG59m69rvfg==", mode: "text/x-java" }
+    };
+    var _cmCorePromise = null;
+    var _cmModePromises = {};
+
+    function _loadScript(src, integrity, crossorigin) {
+        return new Promise(function (resolve, reject) {
+            var script = document.createElement("script");
+            script.src = src;
+            if (integrity) script.integrity = integrity;
+            if (crossorigin) script.crossOrigin = crossorigin;
+            script.referrerPolicy = "no-referrer";
+            script.onload = resolve;
+            script.onerror = reject;
+            document.head.appendChild(script);
+        });
+    }
+
+    function ensureCmCore() {
+        if (window.CodeMirror) return Promise.resolve();
+        if (!_cmCorePromise) {
+            _cmCorePromise = _loadScript(CM_CORE_SRC, CM_CORE_INTEGRITY, "anonymous");
+        }
+        return _cmCorePromise;
+    }
+
+    function ensureCmMode(ext) {
+        var entry = CM_MODES_BY_EXT[ext];
+        if (!entry) return Promise.resolve(null);
+        if (!_cmModePromises[ext]) {
+            _cmModePromises[ext] = _loadScript(entry.src, entry.integrity, "anonymous")
+                .then(function () { return entry.mode; })
+                .catch(function (e) { console.error("Failed to load CM mode for " + ext, e); return null; });
+        }
+        return _cmModePromises[ext];
+    }
+
+    function extOf(path) {
+        var i = path.lastIndexOf(".");
+        return i === -1 ? "" : path.substring(i).toLowerCase();
+    }
+
+    function modeForPath(path) {
+        var entry = CM_MODES_BY_EXT[extOf(path)];
+        return entry ? entry.mode : null;
+    }
 
     function setStatus(message, kind) {
         if (!message) { statusEl.style.display = "none"; return; }
@@ -404,14 +470,43 @@
                 }
                 editorRel = rel;
                 editorPath.textContent = rel;
-                editorArea.value = data.data.content || "";
                 editorPanel.style.display = "";
-                editorArea.focus();
+                // Tear down any existing CodeMirror BEFORE setting the
+                // textarea, otherwise toTextArea() would copy the old buffer
+                // back over the new content.
+                if (cmInstance) { cmInstance.toTextArea(); cmInstance = null; }
+                editorArea.value = data.data.content || "";
                 window.scrollTo(0, document.body.scrollHeight);
+                mountCodeMirror(rel);
+            });
+    }
+
+    function mountCodeMirror(rel) {
+        ensureCmCore()
+            .then(function () { return ensureCmMode(extOf(rel)); })
+            .then(function (mode) {
+                if (!window.CodeMirror) {
+                    // Core failed to load — leave the plain textarea in place.
+                    editorArea.focus();
+                    return;
+                }
+                cmInstance = window.CodeMirror.fromTextArea(editorArea, {
+                    mode: mode || "text/plain",
+                    theme: "dracula",
+                    lineNumbers: true,
+                    indentUnit: 4,
+                    smartIndent: true,
+                });
+                cmInstance.focus();
+            })
+            .catch(function (e) {
+                console.error("CodeMirror load failed", e);
+                editorArea.focus();
             });
     }
 
     function closeEditor() {
+        if (cmInstance) { cmInstance.toTextArea(); cmInstance = null; }
         editorRel = null;
         editorPath.textContent = "";
         editorArea.value = "";
@@ -420,10 +515,12 @@
 
     editorSave.onclick = function () {
         if (!editorRel) return;
+        // Pull from CodeMirror if it's mounted, otherwise the raw textarea.
+        var content = cmInstance ? cmInstance.getValue() : editorArea.value;
         CTFd.fetch("/api/v1/codesubflags/files/contents", {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ path: editorRel, content: editorArea.value }),
+            body: JSON.stringify({ path: editorRel, content: content }),
         })
             .then(function (r) { return r.json(); })
             .then(function (data) {
