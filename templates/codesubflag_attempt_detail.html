@@ -46,6 +46,16 @@
                         <th>Date</th>
                         <td><span data-time="{{ attempt.date | isoformat }}">{{ attempt.date }}</span></td>
                     </tr>
+                    <tr>
+                        <th>Language</th>
+                        <td>
+                            {% if attempt.language and attempt.version %}
+                                {{ attempt.language }} - {{ attempt.version }}
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                    </tr>
                 </tbody>
             </table>
         </div>

@@ -1,0 +1,179 @@
+{% extends "admin/base.html" %}
+
+{% block content %}
+
+<div class="jumbotron">
+    <div class="container">
+        <h1>Code Runner</h1>
+        <p class="lead mb-0">
+            Manage which language runtimes are available on the
+            <a href="https://github.com/engineer-man/piston" target="_blank" rel="noopener noreferrer">engineer-man/piston</a>
+            sandbox.
+            <br>
+            Installs can take 30-90 seconds depending on the runtime.
+        </p>
+    </div>
+</div>
+
+<div class="container">
+    <div id="csf-status" class="alert alert-info" role="alert" style="display:none;"></div>
+
+    <div class="row">
+        <div class="col-md-12">
+            <h3>Installed runtimes</h3>
+            <p class="text-muted">Languages currently available to challenges.</p>
+            <table class="table table-striped border">
+                <thead>
+                    <tr>
+                        <th>Language</th>
+                        <th>Version</th>
+                        <th class="text-right">Action</th>
+                    </tr>
+                </thead>
+                <tbody id="csf-installed-body">
+                    <tr><td colspan="3" class="text-center text-muted">Loading&hellip;</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="row mt-4">
+        <div class="col-md-12">
+            <h3>Available packages</h3>
+            <p class="text-muted">Runtimes piston can install on demand.</p>
+            <table class="table table-striped border">
+                <thead>
+                    <tr>
+                        <th>Language</th>
+                        <th>Version</th>
+                        <th class="text-right">Action</th>
+                    </tr>
+                </thead>
+                <tbody id="csf-available-body">
+                    <tr><td colspan="3" class="text-center text-muted">Loading&hellip;</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    var statusEl = document.getElementById("csf-status");
+    var installedBody = document.getElementById("csf-installed-body");
+    var availableBody = document.getElementById("csf-available-body");
+
+    function setStatus(message, kind) {
+        if (!message) { statusEl.style.display = "none"; return; }
+        statusEl.className = "alert alert-" + (kind || "info");
+        statusEl.textContent = message;
+        statusEl.style.display = "";
+    }
+
+    function renderRow(pkg, action) {
+        var tr = document.createElement("tr");
+        var langTd = document.createElement("td"); langTd.textContent = pkg.language;
+        var verTd  = document.createElement("td"); verTd.textContent  = pkg.version;
+        var actTd  = document.createElement("td"); actTd.className = "text-right";
+
+        var btn = document.createElement("button");
+        btn.type = "button";
+        if (action === "install") {
+            btn.className = "btn btn-sm btn-success";
+            btn.textContent = "Install";
+            btn.onclick = function () { installPackage(pkg, btn); };
+        } else {
+            btn.className = "btn btn-sm btn-outline-danger";
+            btn.textContent = "Uninstall";
+            btn.onclick = function () { uninstallPackage(pkg, btn); };
+        }
+        actTd.appendChild(btn);
+
+        tr.appendChild(langTd); tr.appendChild(verTd); tr.appendChild(actTd);
+        return tr;
+    }
+
+    function emptyRow(message) {
+        var tr = document.createElement("tr");
+        var td = document.createElement("td");
+        td.colSpan = 3;
+        td.className = "text-center text-muted";
+        td.textContent = message;
+        tr.appendChild(td);
+        return tr;
+    }
+
+    function refresh() {
+        Promise.all([
+            CTFd.fetch("/api/v1/codesubflags/runtimes", { method: "GET" }).then(function (r) { return r.json(); }),
+            CTFd.fetch("/api/v1/codesubflags/packages", { method: "GET" }).then(function (r) { return r.json(); })
+        ]).then(function (results) {
+            var runtimesResp = results[0];
+            var packagesResp = results[1];
+
+            installedBody.innerHTML = "";
+            availableBody.innerHTML = "";
+
+            if (!runtimesResp.success) {
+                installedBody.appendChild(emptyRow(runtimesResp.data && runtimesResp.data.message || "Piston unreachable"));
+                setStatus("Piston is not reachable. Check the piston_api container.", "warning");
+            } else {
+                var installed = runtimesResp.data || [];
+                if (!installed.length) {
+                    installedBody.appendChild(emptyRow("No runtimes installed."));
+                } else {
+                    installed.forEach(function (rt) { installedBody.appendChild(renderRow(rt, "uninstall")); });
+                }
+            }
+
+            if (!packagesResp.success) {
+                availableBody.appendChild(emptyRow(packagesResp.data && packagesResp.data.message || "Piston unreachable"));
+            } else {
+                var pkgs = (packagesResp.data || []).filter(function (p) { return !p.installed; });
+                if (!pkgs.length) {
+                    availableBody.appendChild(emptyRow("No additional packages available."));
+                } else {
+                    pkgs.forEach(function (pkg) { availableBody.appendChild(renderRow(pkg, "install")); });
+                }
+            }
+        });
+    }
+
+    function postAction(method, pkg, btn, verb) {
+        var originalLabel = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = verb + "…";
+        setStatus(verb + " " + pkg.language + " " + pkg.version + "… (this can take a minute)", "info");
+
+        CTFd.fetch("/api/v1/codesubflags/packages", {
+            method: method,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ language: pkg.language, version: pkg.version })
+        })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data.success) {
+                    setStatus(verb + " of " + pkg.language + " " + pkg.version + " complete.", "success");
+                } else {
+                    var msg = (data.data && (data.data.message || data.data.error)) || JSON.stringify(data.data || {});
+                    setStatus(verb + " failed: " + msg, "danger");
+                    btn.disabled = false;
+                    btn.textContent = originalLabel;
+                }
+                refresh();
+            })
+            .catch(function (err) {
+                setStatus(verb + " failed: " + err, "danger");
+                btn.disabled = false;
+                btn.textContent = originalLabel;
+            });
+    }
+
+    function installPackage(pkg, btn)   { postAction("POST",   pkg, btn, "Install"); }
+    function uninstallPackage(pkg, btn) { postAction("DELETE", pkg, btn, "Uninstall"); }
+
+    document.addEventListener("DOMContentLoaded", refresh);
+})();
+</script>
+
+{% endblock %}

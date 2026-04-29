@@ -4,32 +4,60 @@ Programming Plugin with Subflags for ComSSA ATR (CTF).
 Uses [Piston](https://github.com/engineer-man/piston) for sandboxing and execution
 
 ## Usage
-1. Install [Piston](https://github.com/engineer-man/piston) and the cli.
-2. Install python runtime for Piston with `cli/index.js ppman install python=3.10.0`
-3. Start container with `docker compose up -d api`
-4. Attach to your ctfd network such as with `docker network connect ctfd_atr2025_default piston_api`
-5. Check it's accessible such as with `docker exec -it ctfd_atr2025-nginx-1 curl http://piston_api:2000/api/v2/runtimes`
+1. Install [Piston](https://github.com/engineer-man/piston).
+2. Start container with `docker compose up -d api`
+3. Attach to your ctfd network such as with `docker network connect ctfd_atr2025_default piston_api`
+4. Check it's accessible such as with `docker exec -it ctfd_atr2025-nginx-1 curl http://piston_api:2000/api/v2/runtimes`
+5. Sign in to CTFd as admin and visit **Plugins > Code Runner** to install
+   the language runtimes you want challenges to use (Python, Java, etc.). The
+   piston CLI still works as a fallback if you'd rather install runtimes
+   from the host.
 
-You can change the RUNNER_URL environment variable to point to a different instance.
+You can change the `RUNNER_URL` environment variable to point to a different
+piston instance; `RUNTIMES_URL` and `PACKAGES_URL` are derived from it
+automatically and can also be overridden individually.
+
+## Code Runner settings page
+
+Lives at `/admin/codesubflags/settings` (registered automatically under the
+admin **Plugins** dropdown via `config.json`). Lists every installed piston
+runtime alongside an Uninstall button, plus every available-but-not-installed
+package with an Install button. Installs can take 30-90 seconds for some
+runtimes; the page shows a status banner while a job is in flight and refreshes
+both tables once piston returns.
 
 ## Admin configuration
 
 When creating/editing a codesubflag challenge:
 
-- **Python file template** — path under the plugin's `challenge_files/` directory, loaded into the editor as the starting code. Defaults to `main.py`.
-- **Data file** — optional txt/csv/etc. under `challenge_files/`; passed alongside the submission when executing.
-- **Max runtime (ms)** — per-submission runtime cap passed to Piston.
-- **Run history size** — server-side retention of each user's Run submissions:
+- **Languages** - one row per language the participant can run their
+  submission against. Each row has its own template (`run_file`) and optional
+  `data_file`, both relative to the plugin's `challenge_files/` directory. The
+  language/version dropdown is populated from runtimes piston currently
+  reports as installed; missing runtimes can be added via Plugins > Code
+  Runner.
+- **Max runtime (ms)** - per-submission runtime cap passed to Piston.
+- **Run history size** - server-side retention of each user's Run
+  submissions:
   - `-1` disabled (no server logging; browser localStorage draft only)
   - `0` unlimited (server still caps at 500 rows per user per challenge)
   - `N` keep only the most recent N runs per user per challenge
 
-  Defaults to 10. Each stored row keeps the submitted code plus stdout/stderr.
+  Defaults to 10. Each stored row keeps the submitted code, stdout/stderr, and
+  the language/version it was executed against.
 
 ## Participant UX
 
-The challenge view renders a CodeMirror editor (Python, dracula theme, 4-space indentation). While editing:
+The challenge view renders a CodeMirror editor (dracula theme, 4-space
+indentation). Behaviour:
 
-- The current buffer is autosaved to `localStorage` so accidental navigation doesn't lose work.
-- **Reset** restores the editor to the original template (current draft discarded).
-- **Restore** (visible when `history_size != -1` and there is at least one stored run) reloads the code from a prior Run submission via a dropdown.
+- A language dropdown appears above the editor whenever the challenge has more
+  than one language configured. Switching languages swaps the CodeMirror mode
+  and loads the new language's template (or your previous draft for that
+  language, if any).
+- Drafts are autosaved per language under separate `localStorage` keys so
+  switching back and forth never loses unsaved code.
+- **Reset** restores the editor to the active language's original template.
+- **Restore** (visible when `history_size != -1` and there is at least one
+  stored run) reloads the code from a prior Run submission and switches the
+  language dropdown to match the attempt.

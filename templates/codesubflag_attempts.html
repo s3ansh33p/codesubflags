@@ -55,6 +55,7 @@
                         <th class="text-center"><b>Date</b></th>
                         <th><b>Challenge</b></th>
                         <th><b>User</b></th>
+                        <th><b>Language</b></th>
                         <th><b>stdout</b></th>
                         <th><b>stderr</b></th>
                         <th class="text-center"><b>View</b></th>
@@ -77,6 +78,9 @@
                                 {{ user_names.get(a.user_id, a.user_id) }}
                             </a>
                         </td>
+                        <td>
+                            {% if a.language and a.version %}{{ a.language }} - {{ a.version }}{% else %}<span class="text-muted">-</span>{% endif %}
+                        </td>
                         <td><pre class="mb-0" title="{{ a.stdout or '' }}">{{ (a.stdout or '') | truncate(60, True) }}</pre></td>
                         <td><pre class="mb-0" title="{{ a.stderr or '' }}">{{ (a.stderr or '') | truncate(60, True) }}</pre></td>
                         <td class="text-center">
@@ -87,7 +91,7 @@
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="7" class="text-center text-muted">No stored attempts match the current filters.</td>
+                        <td colspan="8" class="text-center text-muted">No stored attempts match the current filters.</td>
                     </tr>
                     {% endfor %}
                 </tbody>

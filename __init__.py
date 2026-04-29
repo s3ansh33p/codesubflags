@@ -14,6 +14,7 @@ from CTFd.models import (
     Awards,
 )
 
+import json
 import re
 import requests
 import os
@@ -29,6 +30,21 @@ from CTFd.utils.user import get_current_team, get_current_user
 from datetime import datetime
 
 RUNNER_URL = os.environ.get("RUNNER_URL", "http://piston_api:2000/api/v2/execute")
+
+
+def _piston_base_url():
+    # Strip the "/execute" suffix (or any trailing slash) from RUNNER_URL so we
+    # can synthesise sibling endpoints like /runtimes and /packages without
+    # forcing admins to set three near-identical env vars.
+    base = RUNNER_URL
+    suffix = "/execute"
+    if base.endswith(suffix):
+        base = base[: -len(suffix)]
+    return base.rstrip("/")
+
+
+RUNTIMES_URL = os.environ.get("RUNTIMES_URL", f"{_piston_base_url()}/runtimes")
+PACKAGES_URL = os.environ.get("PACKAGES_URL", f"{_piston_base_url()}/packages")
 
 DEFAULT_HISTORY_SIZE = 10
 MAX_HISTORY_CAP = 500
@@ -65,6 +81,31 @@ class CodesubflagChallenge(Challenges):
     history_size = db.Column(db.Integer, default=DEFAULT_HISTORY_SIZE)
 
 
+# One row per (challenge, language, version) the admin has attached. Each row
+# carries its own template / data file so a single challenge can ship Python
+# starter code, Java starter code, etc. Subflags stay shared across languages.
+class CodesubflagChallengeLanguage(db.Model):
+    __tablename__ = "codesubflag_challenge_languages"
+    id = db.Column(db.Integer, primary_key=True)
+    challenge_id = db.Column(
+        db.Integer,
+        db.ForeignKey("challenges.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    language = db.Column(db.String(64), nullable=False)
+    version = db.Column(db.String(32), nullable=False)
+    run_file = db.Column(db.String(128), nullable=False)
+    data_file = db.Column(db.String(128), nullable=True)
+    sort_order = db.Column(db.Integer, default=0)
+    __table_args__ = (
+        db.Index("ix_csf_lang_challenge", "challenge_id"),
+        db.UniqueConstraint(
+            "challenge_id", "language", "version",
+            name="uq_csf_lang_challenge_lv",
+        ),
+    )
+
+
 # Records every Run-click submission so a user can restore prior code if they
 # misclick/navigate away. Per-user history (not team-shared) so teammates
 # don't see each other's in-progress drafts. Governed by
@@ -78,6 +119,10 @@ class CodesubflagAttempt(db.Model):
     stdout = db.Column(db.Text, nullable=True)
     stderr = db.Column(db.Text, nullable=True)
     date = db.Column(db.DateTime, default=datetime.utcnow)
+    # Language/version the attempt ran against. Nullable so legacy rows from
+    # the pre-multi-language schema continue to load.
+    language = db.Column(db.String(64), nullable=True)
+    version = db.Column(db.String(32), nullable=True)
 
     # Per-user history lookup with ordering — without this, prune/list scales
     # as O(n) in the user's cumulative run count.
@@ -143,7 +188,77 @@ class CodesubflagHint(db.Model):
         self.codesubflag_id = codesubflag_id
         self.hint_order = hint_order
 
-#describes the challenge type 
+def _pop_languages_payload(data):
+    # The admin form posts a JSON-encoded list under "languages" (or, for
+    # multipart submits, leaves it absent). Pull it out of the dict in place
+    # so the calling code can keep iterating the remaining keys safely.
+    raw = data.get("languages") if hasattr(data, "get") else None
+    if raw is None:
+        return None
+    # Drop from form-style mutable mappings; ImmutableMultiDicts (request.form)
+    # are converted to plain dicts upstream so this is safe.
+    if hasattr(data, "pop"):
+        try:
+            data.pop("languages", None)
+        except Exception:
+            pass
+    if isinstance(raw, str):
+        if not raw.strip():
+            return []
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+    if isinstance(raw, list):
+        return raw
+    return None
+
+
+def _serialize_language(row):
+    return {
+        "id": row.id,
+        "language": row.language,
+        "version": row.version,
+        "run_file": row.run_file,
+        "data_file": row.data_file or "",
+        "sort_order": row.sort_order or 0,
+    }
+
+
+def _replace_challenge_languages(challenge_id, payload):
+    # payload=None means the form didn't include the field — leave existing
+    # rows alone. payload=[] means "the admin cleared the list", which we
+    # honour by deleting everything.
+    if payload is None:
+        return
+
+    CodesubflagChallengeLanguage.query.filter_by(challenge_id=challenge_id).delete()
+    for idx, entry in enumerate(payload):
+        if not isinstance(entry, dict):
+            continue
+        language = (entry.get("language") or "").strip()
+        version = (entry.get("version") or "").strip()
+        run_file = (entry.get("run_file") or "").strip()
+        if not (language and version and run_file):
+            continue
+        data_file = (entry.get("data_file") or "").strip() or None
+        sort_order = entry.get("sort_order")
+        try:
+            sort_order = int(sort_order) if sort_order is not None else idx
+        except (TypeError, ValueError):
+            sort_order = idx
+        db.session.add(CodesubflagChallengeLanguage(
+            challenge_id=challenge_id,
+            language=language,
+            version=version,
+            run_file=run_file,
+            data_file=data_file,
+            sort_order=sort_order,
+        ))
+    db.session.commit()
+
+
+#describes the challenge type
 class CodesubflagChallengeType(BaseChallenge):
     # defines id and name of the codesubflag
     id = "codesubflags"
@@ -185,13 +300,25 @@ class CodesubflagChallengeType(BaseChallenge):
         # input data
         data = request.form or request.get_json()
 
+        # languages is a JSON-encoded list of {language, version, run_file,
+        # data_file, sort_order} rows posted by the admin form. Extract it
+        # before passing the rest to the Challenge constructor so SQLAlchemy
+        # doesn't see an unknown field.
+        languages_payload = _pop_languages_payload(data)
+
         # get list with only challenge information (no information about codesubflags and their hints)
-        challenge_data = {key:value for (key,value) in data.items() if not key.startswith('codesubflag')}
+        challenge_data = {
+            key: value
+            for (key, value) in data.items()
+            if not key.startswith('codesubflag') and key != 'languages'
+        }
 
         # create new Codesubflag challenge with all ordinary challenge information (excluding codesubflag data)
         challenge = CodesubflagChallenge(**challenge_data)
         db.session.add(challenge)
         db.session.commit()
+
+        _replace_challenge_languages(challenge.id, languages_payload)
 
         # get list with only codesubflag information 
         codesubflag_data = {key:value for (key,value) in data.items() if key.startswith('codesubflag')}
@@ -226,6 +353,41 @@ class CodesubflagChallengeType(BaseChallenge):
                 db.session.commit()        
         return challenge
 
+    @classmethod
+    def read(cls, challenge):
+        # Extend the default payload with this challenge's configured
+        # languages so the admin update.html can prefill the repeater
+        # without a second round-trip. Use super() so type_data.id/name/
+        # templates/scripts are taken from this subclass — calling
+        # BaseChallenge.read directly would bind cls=BaseChallenge and
+        # return an empty scripts dict, which the frontend would then try
+        # to load as `<script src="undefined">`.
+        data = super().read(challenge)
+        rows = (
+            CodesubflagChallengeLanguage.query
+            .filter_by(challenge_id=challenge.id)
+            .order_by(CodesubflagChallengeLanguage.sort_order)
+            .all()
+        )
+        data["languages"] = [_serialize_language(r) for r in rows]
+        return data
+
+    @classmethod
+    def update(cls, challenge, request):
+        # CTFd's BaseChallenge.update setattr's every key on the model, so the
+        # languages JSON has to be pulled off the request payload first.
+        data = request.form or request.get_json()
+        if not isinstance(data, dict):
+            data = dict(data)
+        languages_payload = _pop_languages_payload(data)
+
+        for attr, value in data.items():
+            setattr(challenge, attr, value)
+        db.session.commit()
+
+        _replace_challenge_languages(challenge.id, languages_payload)
+        return challenge
+
     # override the default function to delete a challenge
     @classmethod
     def delete(cls, challenge):
@@ -246,6 +408,9 @@ class CodesubflagChallengeType(BaseChallenge):
 
         # delete all code-run history entries for the challenge
         CodesubflagAttempt.query.filter_by(challenge_id=challenge.id).delete()
+
+        # remove every language attached to the challenge
+        CodesubflagChallengeLanguage.query.filter_by(challenge_id=challenge.id).delete()
 
         # delete all ordinary challenge files
         Fails.query.filter_by(challenge_id=challenge.id).delete()
@@ -517,27 +682,54 @@ class Run(Resource):
         challenge = CodesubflagChallenge.query.filter_by(id = challenge_id).first()
         if challenge is None:
             return {"success": False, "data": {"message": "Challenge not found"}}
-        
+
         submission = data["submission"].strip()
         # instance_id = submission
 
+        # Pick the language row to run against. If the client sent language+version
+        # we trust that selection (after validating it's actually configured); if
+        # they didn't and the challenge has exactly one row, fall back to it so
+        # single-language challenges keep working without a body change.
+        languages = (
+            CodesubflagChallengeLanguage.query
+            .filter_by(challenge_id=challenge.id)
+            .order_by(CodesubflagChallengeLanguage.sort_order)
+            .all()
+        )
+        if not languages:
+            return {"success": False, "data": {"message": "No languages configured for this challenge."}}
+
+        req_lang = (data.get("language") or "").strip()
+        req_ver = (data.get("version") or "").strip()
+        if req_lang and req_ver:
+            lang_row = next(
+                (l for l in languages if l.language == req_lang and l.version == req_ver),
+                None,
+            )
+            if lang_row is None:
+                return {"success": False, "data": {"message": "Selected language is not configured for this challenge."}}
+        elif len(languages) == 1:
+            lang_row = languages[0]
+        else:
+            return {"success": False, "data": {"message": "Language must be specified."}}
+
         files = [{
-            "name": "user.py",
+            "name": lang_row.run_file,
             "content": submission
         }]
-        if challenge.data_file:
+        if lang_row.data_file:
             files.append({
-                "name": challenge.data_file,
-                "content": getContents(challenge.data_file)
+                "name": lang_row.data_file,
+                "content": getContents(lang_row.data_file)
             })
 
         try:
             r = requests.post(
                 RUNNER_URL,
                 json={
-                    "language": "python3",
-                    "version": "3.10.0",
-                    "files": files, 
+                    "language": lang_row.language,
+                    "version": lang_row.version,
+                    "files": files,
                     "run_timeout": challenge.run_timeout,
                     "stdin": "",
                     "args": [],
@@ -548,13 +740,13 @@ class Run(Resource):
 
         if r.status_code == 200:
             payload = r.json()
-            _record_attempt(challenge, submission, payload)
+            _record_attempt(challenge, submission, payload, lang_row.language, lang_row.version)
             return {"success": True, "data": payload}
         else:
             return {"success": False, "data": {"message": "Non 200 code returned. Talk to an admin."}}
 
 
-def _record_attempt(challenge, submission, runner_payload):
+def _record_attempt(challenge, submission, runner_payload, language=None, version=None):
     retention = _effective_retention(_history_size(challenge))
     if retention == 0:
         return
@@ -568,6 +760,8 @@ def _record_attempt(challenge, submission, runner_payload):
         code=submission,
         stdout=run_block.get("output"),
         stderr=run_block.get("stderr"),
+        language=language,
+        version=version,
     )
     db.session.add(attempt)
     db.session.commit()
@@ -596,18 +790,42 @@ class Get(Resource):
         challenge = CodesubflagChallenge.query.filter_by(id = challenge_id).first()
         if challenge is None:
             return {"success": False, "data": {"message": "Challenge not found"}}
-        
+
         history_size = _history_size(challenge)
-        if challenge.run_file:
-            return {
-                "success": True,
-                "data": {
-                    "message": getContents(challenge.run_file),
-                    "history_size": history_size,
-                },
-            }
-        else:
+        rows = (
+            CodesubflagChallengeLanguage.query
+            .filter_by(challenge_id=challenge.id)
+            .order_by(CodesubflagChallengeLanguage.sort_order)
+            .all()
+        )
+        if not rows:
             return {"success": False, "data": {"message": "No starting code found. Talk to an admin."}}
+
+        languages = []
+        for row in rows:
+            try:
+                template = getContents(row.run_file)
+            except (FileNotFoundError, OSError):
+                template = ""
+            languages.append({
+                "language": row.language,
+                "version": row.version,
+                "run_file": row.run_file,
+                "data_file": row.data_file or "",
+                "template": template,
+                "sort_order": row.sort_order or 0,
+            })
+
+        # `message` is preserved for back-compat with anything still reading
+        # the old single-template payload — point it at the first language.
+        return {
+            "success": True,
+            "data": {
+                "message": languages[0]["template"],
+                "history_size": history_size,
+                "languages": languages,
+            },
+        }
 
 
 @codesubflags_namespace.route("/attempts/<challenge_id>")
@@ -650,11 +868,128 @@ class Attempts(Resource):
                         "code": r.code,
                         "stdout": r.stdout,
                         "stderr": r.stderr,
+                        "language": r.language,
+                        "version": r.version,
                     }
                     for r in rows
                 ],
             },
         }
+
+@codesubflags_namespace.route("/runtimes")
+class Runtimes(Resource):
+    """
+    Lightweight admin proxy over piston's GET /api/v2/runtimes. Used by the
+    challenge-edit form to populate a "what's installed" dropdown.
+    """
+
+    @admins_only
+    def get(self):
+        try:
+            r = requests.get(RUNTIMES_URL, timeout=3)
+            r.raise_for_status()
+        except requests.RequestException:
+            return {"success": False, "data": {"message": "Piston not reachable"}}
+        try:
+            payload = r.json()
+        except ValueError:
+            return {"success": False, "data": {"message": "Piston returned an invalid response"}}
+        runtimes = []
+        for entry in payload:
+            language = entry.get("language")
+            version = entry.get("version")
+            if not language or not version:
+                continue
+            runtimes.append({
+                "language": language,
+                "version": version,
+                "label": f"{language} - {version}",
+            })
+        runtimes.sort(key=lambda x: (x["language"], x["version"]))
+        return {"success": True, "data": runtimes}
+
+
+@codesubflags_namespace.route("/packages")
+class Packages(Resource):
+    """
+    Admin-only thin proxy for piston's package management endpoints. The
+    settings page uses these to install/uninstall language runtimes without
+    needing the piston CLI.
+    """
+
+    @admins_only
+    def get(self):
+        try:
+            r = requests.get(PACKAGES_URL, timeout=5)
+            r.raise_for_status()
+        except requests.RequestException:
+            return {"success": False, "data": {"message": "Piston not reachable"}}
+        try:
+            payload = r.json()
+        except ValueError:
+            return {"success": False, "data": {"message": "Piston returned an invalid response"}}
+        packages = []
+        for entry in payload:
+            language = entry.get("language")
+            version = entry.get("language_version") or entry.get("version")
+            if not language or not version:
+                continue
+            packages.append({
+                "language": language,
+                "version": version,
+                "installed": bool(entry.get("installed")),
+            })
+        packages.sort(key=lambda x: (not x["installed"], x["language"], x["version"]))
+        return {"success": True, "data": packages}
+
+    @admins_only
+    def post(self):
+        body = request.get_json(silent=True) or {}
+        language = (body.get("language") or "").strip()
+        version = (body.get("version") or "").strip()
+        if not language or not version:
+            return {"success": False, "data": {"message": "language and version are required"}}
+        try:
+            # Piston package installs can take 30-90s for some runtimes — let
+            # the request stay open long enough rather than failing fast.
+            r = requests.post(
+                PACKAGES_URL,
+                json={"language": language, "version": version},
+                timeout=180,
+            )
+        except requests.RequestException as e:
+            return {"success": False, "data": {"message": f"Install failed: {e}"}}
+        try:
+            payload = r.json()
+        except ValueError:
+            payload = {"raw": r.text}
+        if r.status_code >= 400:
+            return {"success": False, "data": payload}
+        return {"success": True, "data": payload}
+
+    @admins_only
+    def delete(self):
+        body = request.get_json(silent=True) or {}
+        language = (body.get("language") or "").strip()
+        version = (body.get("version") or "").strip()
+        if not language or not version:
+            return {"success": False, "data": {"message": "language and version are required"}}
+        try:
+            r = requests.delete(
+                PACKAGES_URL,
+                json={"language": language, "version": version},
+                timeout=30,
+            )
+        except requests.RequestException as e:
+            return {"success": False, "data": {"message": f"Uninstall failed: {e}"}}
+        try:
+            payload = r.json()
+        except ValueError:
+            payload = {"raw": r.text}
+        if r.status_code >= 400:
+            return {"success": False, "data": payload}
+        return {"success": True, "data": payload}
+
 
 def load(app):
     upgrade()
@@ -719,6 +1054,11 @@ def load(app):
             prev_page=url_for(request.endpoint, page=attempts.prev_num, **args),
             next_page=url_for(request.endpoint, page=attempts.next_num, **args),
         )
+
+    @codesubflags_admin.route("/admin/codesubflags/settings")
+    @admins_only
+    def admin_settings():
+        return render_template("codesubflag_settings.html")
 
     @codesubflags_admin.route("/admin/codesubflags/<int:attempt_id>")
     @admins_only

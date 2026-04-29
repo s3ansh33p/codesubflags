@@ -7,8 +7,30 @@ CTFd.plugin.run((_CTFd) => {
     $(document).ready(function() {
         // run insert_codesubflags when the page is loaded
         insert_codesubflags();
+        bootstrap_languages_editor();
     });
 });
+
+// Pulls the shared languages-editor helper, fetches the challenge's saved
+// language rows, and renders the repeater pre-populated.
+function bootstrap_languages_editor() {
+    function go() {
+        $.get(`/api/v1/challenges/${CHALLENGE_ID}`).done(function (resp) {
+            const langs = (resp && resp.data && resp.data.languages) || [];
+            window.setupCodesubflagLanguagesEditor({ prefill: langs });
+        }).fail(function () {
+            window.setupCodesubflagLanguagesEditor({ prefill: [] });
+        });
+    }
+    if (typeof window.setupCodesubflagLanguagesEditor === "function") {
+        go();
+        return;
+    }
+    const s = document.createElement("script");
+    s.src = "/plugins/codesubflags/assets/languages_editor.js";
+    s.onload = go;
+    document.head.appendChild(s);
+}
 
 // inserts the codesubflags
 function insert_codesubflags(){

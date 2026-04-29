@@ -23,6 +23,25 @@ $("#add-new-subflag").click(function () {
     count += 1;
 });
 
-$(document).ready(function(){
+// Pull the shared languages-editor helper in once the form is on the page,
+// then bootstrap the repeater with a single python row so a fresh challenge
+// is immediately runnable on a default piston install.
+function loadCodesubflagLanguagesEditor(then) {
+    if (typeof window.setupCodesubflagLanguagesEditor === "function") {
+        then();
+        return;
+    }
+    var s = document.createElement("script");
+    s.src = "/plugins/codesubflags/assets/languages_editor.js";
+    s.onload = then;
+    document.head.appendChild(s);
+}
+
+$(document).ready(function () {
     $('[data-toggle="tooltip"]').tooltip();
+    loadCodesubflagLanguagesEditor(function () {
+        window.setupCodesubflagLanguagesEditor({
+            prefill: [{ language: "python", version: "3.10.0", run_file: "main.py", data_file: "" }]
+        });
+    });
 });

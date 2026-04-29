@@ -8,8 +8,9 @@ CTFd._internal.challenge.postRender = async function() {
     // insert the codesubflags into the view
     insert_codesubflags();
 
-    // Ensure CodeMirror is loaded before calling get_code_template
-    await ensureCodeMirrorLoaded();
+    // The CodeMirror core needs to be present before we can mount the editor;
+    // language modes are loaded lazily once we know which language is active.
+    await ensureCodeMirrorCore();
     get_code_template();
 }
 
@@ -18,8 +19,8 @@ function loadScript(src, integrity, crossorigin) {
     return new Promise((resolve, reject) => {
         const script = document.createElement('script');
         script.src = src;
-        script.integrity = integrity;
-        script.crossOrigin = crossorigin;
+        if (integrity) script.integrity = integrity;
+        if (crossorigin) script.crossOrigin = crossorigin;
         script.referrerPolicy = "no-referrer";
         script.onload = resolve;
         script.onerror = reject;
@@ -27,18 +28,51 @@ function loadScript(src, integrity, crossorigin) {
     });
 }
 
-// Ensure CodeMirror is loaded before calling get_code_template
-function ensureCodeMirrorLoaded() {
-    const codemirrorSrc = "https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/codemirror.min.js";
-    const codemirrorIntegrity = "sha512-8RnEqURPUc5aqFEN04aQEiPlSAdE0jlFS/9iGgUyNtwFnSKCXhmB6ZTNl7LnDtDWKabJIASzXrzD0K+LYexU9g==";
-    const pythonModeSrc = "https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/mode/python/python.min.js";
-    const pythonModeIntegrity = "sha512-2M0GdbU5OxkGYMhakED69bw0c1pW3Nb0PeF3+9d+SnwN1ryPx3wiDdNqK3gSM7KAU/pEV+2tFJFbMKjKAahOkQ==";
+const CODEMIRROR_CORE_SRC       = "https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/codemirror.min.js";
+const CODEMIRROR_CORE_INTEGRITY = "sha512-8RnEqURPUc5aqFEN04aQEiPlSAdE0jlFS/9iGgUyNtwFnSKCXhmB6ZTNl7LnDtDWKabJIASzXrzD0K+LYexU9g==";
 
-    return loadScript(codemirrorSrc, codemirrorIntegrity, "anonymous")
-        .then(() => loadScript(pythonModeSrc, pythonModeIntegrity, "anonymous"))
-        .catch((error) => {
-            console.error("Failed to load CodeMirror scripts:", error);
-        });
+// Map piston language id -> { src, integrity, mode }. Adding a new language
+// here is enough to make it editable in CodeMirror; the run path uses piston
+// directly so it doesn't need a frontend mode entry to function.
+const CODEMIRROR_MODES = {
+    "python": {
+        src: "https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/mode/python/python.min.js",
+        integrity: "sha512-2M0GdbU5OxkGYMhakED69bw0c1pW3Nb0PeF3+9d+SnwN1ryPx3wiDdNqK3gSM7KAU/pEV+2tFJFbMKjKAahOkQ==",
+        mode: "python"
+    },
+    "java": {
+        // CodeMirror's Java highlighting lives in the C-like mode bundle.
+        src: "https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/mode/clike/clike.min.js",
+        integrity: "sha512-l8ZIWnQ3XHPRG3MQ8+hT1OffRSTrFwrph1j1oc1Fzc9UKVGef5XN9fdO0vm3nW0PRgQ9LJgck6ciG59m69rvfg==",
+        mode: "text/x-java"
+    }
+};
+
+const _modePromises = {};
+
+function ensureCodeMirrorCore() {
+    if (window.CodeMirror) return Promise.resolve();
+    return loadScript(CODEMIRROR_CORE_SRC, CODEMIRROR_CORE_INTEGRITY, "anonymous")
+        .catch((error) => { console.error("Failed to load CodeMirror core:", error); });
+}
+
+function ensureCodeMirrorMode(language) {
+    const entry = CODEMIRROR_MODES[language];
+    if (!entry) return Promise.resolve(null);
+    if (!_modePromises[language]) {
+        _modePromises[language] = loadScript(entry.src, entry.integrity, entry.integrity ? "anonymous" : null)
+            .then(() => entry.mode)
+            .catch((error) => {
+                console.error("Failed to load CodeMirror mode for " + language, error);
+                return null;
+            });
+    }
+    return _modePromises[language];
+}
+
+function modeStringFor(language) {
+    const entry = CODEMIRROR_MODES[language];
+    return entry ? entry.mode : "text/plain";
 }
 
 // assigns ids to the original html hint element
@@ -128,24 +162,32 @@ const HISTORY_DISABLED = -1;
 const DEFAULT_HISTORY_SIZE_FALLBACK = 10;
 window.codesubflags = window.codesubflags || {
     editor: null,
-    template: null,
     challenge_id: null,
     history_size: DEFAULT_HISTORY_SIZE_FALLBACK,
     attempts: {},
     // Monotonic counter so older in-flight history fetches can't clobber newer ones.
     history_fetch_seq: 0,
+    // Multi-language state.
+    languages: [],         // [{language, version, run_file, template, ...}]
+    current: null,         // active {language, version} pair
 };
 
-// localStorage key for a user's in-progress draft for a given challenge.
-function draft_key(challenge_id) {
-    return `codesubflags_draft_${challenge_id}`;
+// Per-language draft so switching back and forth doesn't lose unsaved code.
+function draft_key(challenge_id, language, version) {
+    return `codesubflags_draft_${challenge_id}_${language}_${version}`;
 }
 
-function save_draft(id, code) { localStorage.setItem(draft_key(id), code); }
-function clear_draft(id)      { localStorage.removeItem(draft_key(id)); }
+function save_draft(challenge_id, language, version, code) {
+    try { localStorage.setItem(draft_key(challenge_id, language, version), code); } catch (e) {}
+}
+function clear_draft(challenge_id, language, version) {
+    try { localStorage.removeItem(draft_key(challenge_id, language, version)); } catch (e) {}
+}
 // Guarded: runs on the editor's init path, so a throw here would prevent the
 // editor from rendering at all (e.g. Safari private mode, blocked storage).
-function load_draft(id) { try { return localStorage.getItem(draft_key(id)); } catch (e) { return null; } }
+function load_draft(challenge_id, language, version) {
+    try { return localStorage.getItem(draft_key(challenge_id, language, version)); } catch (e) { return null; }
+}
 
 function debounce(fn, ms) {
     let t = null;
@@ -155,6 +197,10 @@ function debounce(fn, ms) {
     };
 }
 
+function find_language(state, language, version) {
+    return state.languages.find(l => l.language === language && l.version === version) || null;
+}
+
 function get_code_template() {
     const challenge_id = parseInt(CTFd.lib.$('#challenge-id').val());
 
@@ -162,22 +208,37 @@ function get_code_template() {
       method: "GET"
     })
     .then((response) => response.json())
-    .then((data) => {
+    .then(async (data) => {
         if (!data || !data.success) {
             console.error("codesubflags: template fetch unsuccessful", data);
             return;
         }
-        const template = data.data.message;
         const history_size = data.data?.history_size ?? DEFAULT_HISTORY_SIZE_FALLBACK;
+        const languages = Array.isArray(data.data?.languages) ? data.data.languages : [];
+        if (!languages.length) {
+            console.error("codesubflags: no languages configured for this challenge");
+            return;
+        }
 
-        // Remember the clean starting template so Reset works without a refetch.
-        window.codesubflags.template = template;
-        window.codesubflags.challenge_id = challenge_id;
-        window.codesubflags.history_size = history_size;
+        const state = window.codesubflags;
+        state.challenge_id = challenge_id;
+        state.history_size = history_size;
+        state.languages = languages;
+        state.current = { language: languages[0].language, version: languages[0].version };
+
+        populate_language_dropdown(languages);
+
+        // Make sure the active language's CodeMirror mode is available before
+        // the editor is constructed, so we don't briefly mount in plain text.
+        await ensureCodeMirrorMode(state.current.language);
+
+        const initialLang = languages[0];
+        const draft = load_draft(challenge_id, initialLang.language, initialLang.version);
+        const initial = (draft !== null && draft !== "") ? draft : (initialLang.template || "");
 
         const editor = CodeMirror.fromTextArea(document.getElementById("coderunner"), {
             lineNumbers: true,
-            mode: "python",
+            mode: modeStringFor(initialLang.language),
             indentUnit: 4,
             // Tabs -> spaces to avoid mixed indentation in submitted code.
             indentWithTabs: false,
@@ -192,16 +253,13 @@ function get_code_template() {
             }
         });
         editor.setSize("100%", "500px");
-
-        // Prefer a locally saved draft so accidental navigation doesn't lose work.
-        const draft = load_draft(challenge_id);
-        const initial = (draft !== null && draft !== "") ? draft : template;
         editor.setValue(initial);
 
         // Debounced autosave so every keystroke doesn't hit localStorage.
         const persist = debounce(() => {
             editor.save();
-            save_draft(challenge_id, editor.getValue());
+            const cur = state.current;
+            if (cur) save_draft(state.challenge_id, cur.language, cur.version, editor.getValue());
         }, 500);
         editor.on("change", persist);
 
@@ -210,7 +268,7 @@ function get_code_template() {
             editor.focus();
             editor.setCursor(editor.lineCount(), 0);
         }, 200);
-        window.codesubflags.editor = editor;
+        state.editor = editor;
         // Kept for backwards-compat — some hand-pasted console snippets still poke window.editor.
         window.editor = editor;
 
@@ -222,6 +280,54 @@ function get_code_template() {
     .catch((err) => {
         console.error("codesubflags: template fetch failed", err);
     });
+}
+
+function populate_language_dropdown(languages) {
+    const row = document.getElementById("coderunner-language-row");
+    const select = document.getElementById("coderunner-language");
+    if (!row || !select) return;
+
+    select.innerHTML = "";
+    languages.forEach((l) => {
+        const opt = document.createElement("option");
+        opt.value = l.language + "|" + l.version;
+        opt.textContent = l.language + " - " + l.version;
+        select.appendChild(opt);
+    });
+    select.value = languages[0].language + "|" + languages[0].version;
+    // Hide the dropdown for single-language challenges so the UI stays clean.
+    row.style.display = languages.length > 1 ? "" : "none";
+
+    select.addEventListener("change", on_language_change);
+}
+
+async function on_language_change() {
+    const state = window.codesubflags;
+    const select = document.getElementById("coderunner-language");
+    if (!select || !state.editor) return;
+
+    const parts = select.value.split("|");
+    if (parts.length !== 2) return;
+    const [language, version] = parts;
+    const target = find_language(state, language, version);
+    if (!target) return;
+
+    // Save the outgoing language's buffer so toggling back is non-destructive.
+    if (state.current) {
+        state.editor.save();
+        save_draft(state.challenge_id, state.current.language, state.current.version, state.editor.getValue());
+    }
+
+    await ensureCodeMirrorMode(language);
+    state.current = { language, version };
+
+    const draft = load_draft(state.challenge_id, language, version);
+    const next = (draft !== null && draft !== "") ? draft : (target.template || "");
+    state.editor.setOption("mode", modeStringFor(language));
+    state.editor.setValue(next);
+    state.editor.save();
+    state.editor.focus();
+    state.editor.setCursor(state.editor.lineCount(), 0);
 }
 
 function refresh_history_dropdown() {
@@ -254,7 +360,8 @@ function refresh_history_dropdown() {
             opt.value = a.id;
             const when = a.date ? new Date(a.date).toLocaleString() : "";
             const preview = (a.code || "").split("\n")[0].slice(0, 40);
-            opt.textContent = `${when} — ${preview}`;
+            const langLabel = (a.language && a.version) ? `[${a.language} ${a.version}] ` : "";
+            opt.textContent = `${when} — ${langLabel}${preview}`;
             select.appendChild(opt);
         });
 
@@ -262,7 +369,7 @@ function refresh_history_dropdown() {
     });
 }
 
-function restore_selected_attempt() {
+async function restore_selected_attempt() {
     const state = window.codesubflags;
     const select = document.getElementById("coderunner-history");
     if (!select || !select.value) return;
@@ -270,20 +377,35 @@ function restore_selected_attempt() {
     if (!attempt || !state.editor) return;
     if (!confirm("Replace the current editor contents with this saved run?")) return;
 
+    // If the attempt was made in a different language, switch to it before
+    // dropping the code in so the editor mode and dropdown stay in sync.
+    if (attempt.language && attempt.version) {
+        const target = find_language(state, attempt.language, attempt.version);
+        if (target) {
+            const langSelect = document.getElementById("coderunner-language");
+            if (langSelect) langSelect.value = attempt.language + "|" + attempt.version;
+            await ensureCodeMirrorMode(attempt.language);
+            state.current = { language: attempt.language, version: attempt.version };
+            state.editor.setOption("mode", modeStringFor(attempt.language));
+        }
+    }
+
     state.editor.setValue(attempt.code || "");
     state.editor.save();
-    save_draft(state.challenge_id, state.editor.getValue());
+    if (state.current) {
+        save_draft(state.challenge_id, state.current.language, state.current.version, state.editor.getValue());
+    }
 }
 
 function reset_code_to_default() {
     const state = window.codesubflags;
-    // Guard against the template fetch having failed — without this, Reset
-    // would blank the editor instead of no-oping.
-    if (!state.editor || typeof state.template !== "string") return;
+    if (!state.editor || !state.current) return;
+    const target = find_language(state, state.current.language, state.current.version);
+    if (!target) return;
     if (!confirm("Reset the editor to the original starting code? Your current draft will be lost.")) return;
 
-    clear_draft(state.challenge_id);
-    state.editor.setValue(state.template);
+    clear_draft(state.challenge_id, state.current.language, state.current.version);
+    state.editor.setValue(target.template || "");
     state.editor.save();
     state.editor.focus();
     state.editor.setCursor(state.editor.lineCount(), 0);
@@ -293,18 +415,20 @@ function run_code() {
     const state = window.codesubflags;
     const challenge_id = parseInt(CTFd.lib.$('#challenge-id').val());
     const editor = state.editor;
-    if (!editor) return;
+    if (!editor || !state.current) return;
     editor.save();
     const submission = editor.getValue();
 
     const body = {
         challenge_id: challenge_id,
-        submission: submission
+        submission: submission,
+        language: state.current.language,
+        version: state.current.version
     };
 
     // Persist the current buffer before firing the run — belt-and-braces in case
     // of a network error or the user navigating away while the request is in flight.
-    save_draft(challenge_id, submission);
+    save_draft(challenge_id, state.current.language, state.current.version, submission);
 
     CTFd.fetch(`/api/v1/codesubflags/run/${challenge_id}`, {
       method: "POST",
@@ -312,11 +436,14 @@ function run_code() {
     })
     .then((response) => response.json())
     .then((data) => {
-        const run = data.data.run;
-        CTFd.lib.$('#coderunner-output').html(run.output);
-        CTFd.lib.$("#coderunner-errors").html(run.stderr);
+        const run = (data && data.data && data.data.run) || {};
+        CTFd.lib.$('#coderunner-output').html(run.output || "");
+        CTFd.lib.$("#coderunner-errors").html(run.stderr || "");
         if (run.signal == "SIGKILL" && run.stderr == "" && run.output == "") {
             CTFd.lib.$("#coderunner-errors").html("Your code may have timed out. Please try again. (max execution time of 5 seconds)");
+        }
+        if (data && data.success === false && data.data && data.data.message) {
+            CTFd.lib.$("#coderunner-errors").html(data.data.message);
         }
         if (state.history_size !== HISTORY_DISABLED) {
             refresh_history_dropdown();
