@@ -21,7 +21,20 @@ Uses [Piston](https://github.com/engineer-man/piston) for sandboxing and executi
    ```bash
    sudo chown -R 1001:1001 CTFd/plugins/codesubflags/challenge_files
    ```
-3. Install [Piston](https://github.com/engineer-man/piston).
+3. Install [Piston](https://github.com/engineer-man/piston). The container
+   needs the following environment variables set so per-submission caps line
+   up with what the plugin sends:
+
+   ```
+   PISTON_RUN_TIMEOUT=10000        # ms, wall-clock per process
+   PISTON_RUN_CPU_TIME=10000       # ms, CPU time per process
+   PISTON_MAX_CONCURRENT_JOBS=2
+   ```
+
+   Add them to piston's `docker-compose.yml` under `environment:` (or pass as
+   `-e` flags if you `docker run` it). Defaults are too low and submissions
+   that take more than a couple of seconds will be killed by Piston before
+   the plugin's own `Max runtime (ms)` setting applies.
 4. Start container with `docker compose up -d api`
 5. Restart your CTFd instance to load the plugin, e.g. `docker compose down` && `docker compose up -d`
 6. Attach to your ctfd network such as with `docker network connect ctfd_atr2025_default piston_api`
