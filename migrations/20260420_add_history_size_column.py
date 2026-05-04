@@ -7,7 +7,7 @@ Create Date: 2026-04-20 00:00:00.000000
 """
 import sqlalchemy as sa
 
-from CTFd.plugins.migrations import get_columns_for_table
+from CTFd.plugins.migrations import get_all_tables, get_columns_for_table
 
 revision = "20260420_add_history_size_column"
 down_revision = None
@@ -16,6 +16,10 @@ depends_on = None
 
 
 def upgrade(op=None):
+    # Fresh install: tables don't exist yet — create_all() runs after upgrade()
+    # and will build them at the current schema, so nothing to migrate.
+    if "codesubflag_challenge" not in get_all_tables(op=op):
+        return
     columns = get_columns_for_table(
         op=op, table_name="codesubflag_challenge", names_only=True
     )
@@ -36,6 +40,8 @@ def upgrade(op=None):
 
 
 def downgrade(op=None):
+    if "codesubflag_challenge" not in get_all_tables(op=op):
+        return
     columns = get_columns_for_table(
         op=op, table_name="codesubflag_challenge", names_only=True
     )

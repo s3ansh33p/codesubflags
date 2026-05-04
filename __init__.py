@@ -1388,8 +1388,13 @@ class ChallengeFilesContents(Resource):
 
 
 def load(app):
-    upgrade()
+    # create_all() must come first so a fresh install has the base tables in
+    # place before migrations try to inspect/alter them. Migrations are
+    # idempotent (they check whether columns/tables already exist) so this
+    # is a no-op on a brand new database and still applies pending changes
+    # on an existing one.
     app.db.create_all()
+    upgrade()
     CHALLENGE_CLASSES["codesubflags"] = CodesubflagChallengeType
     register_plugin_assets_directory(app, base_path="/plugins/codesubflags/assets/")
     # Expose the default so admin HTML forms don't have to hardcode it.

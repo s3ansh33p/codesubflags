@@ -18,6 +18,11 @@ depends_on = None
 def upgrade(op=None):
     tables = get_all_tables(op=op)
 
+    # Fresh install: base tables don't exist yet — create_all() runs after
+    # upgrade() and will build everything at the current schema.
+    if "codesubflag_challenge" not in tables or "codesubflag_attempt" not in tables:
+        return
+
     if "codesubflag_challenge_languages" not in tables:
         op.create_table(
             "codesubflag_challenge_languages",
@@ -95,6 +100,8 @@ def downgrade(op=None):
     if "codesubflag_challenge_languages" in tables:
         op.drop_table("codesubflag_challenge_languages")
 
+    if "codesubflag_attempt" not in tables:
+        return
     attempt_columns = get_columns_for_table(
         op=op, table_name="codesubflag_attempt", names_only=True
     )
