@@ -36,10 +36,16 @@ Uses [Piston](https://github.com/engineer-man/piston) for sandboxing and executi
    that take more than a couple of seconds will be killed by Piston before
    the plugin's own `Max runtime (ms)` setting applies.
 4. Start container with `docker compose up -d api`
-5. Restart your CTFd instance to load the plugin, e.g. `docker compose down` && `docker compose up -d`
-6. Attach to your ctfd network such as with `docker network connect ctfd_atr2025_default piston_api`
-7. Check it's accessible such as with `docker exec -it ctfd_atr2025-nginx-1 curl http://piston_api:2000/api/v2/runtimes`
-8. Sign in to CTFd as admin and visit **Plugins > Code Runner** to install
+5. Block external access to piston's port 2000 so it's only reachable from
+   inside the docker network:
+
+   ```bash
+   sudo iptables -I DOCKER-USER -p tcp --dport 2000 -j DROP
+   ```
+6. Restart your CTFd instance to load the plugin, e.g. `docker compose down` && `docker compose up -d`
+7. Attach to your ctfd network such as with `docker network connect ctfd_atr2025_default piston_api`
+8. Check it's accessible such as with `docker exec -it ctfd_atr2025-nginx-1 curl http://piston_api:2000/api/v2/runtimes`
+9. Sign in to CTFd as admin and visit **Plugins > Code Runner** to install
    the language runtimes you want challenges to use (Python 3.10, Java 15.0.2, etc.). The
    piston CLI still works as a fallback if you'd rather install runtimes
    from the host.
