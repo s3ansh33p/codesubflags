@@ -843,6 +843,16 @@ class Run(Resource):
             _record_attempt(challenge, submission, payload, lang_row.language, lang_row.version)
             return {"success": True, "data": payload}
         else:
+            # Surface the upstream status + body so admins can diagnose. Log
+            # unconditionally; only echo details to admins in the response.
+            body = r.text[:1000]
+            current_app.logger.error(
+                "codesubflags: piston returned %s for %s/%s on challenge %s: %s",
+                r.status_code, lang_row.language, lang_row.version, challenge_id, body,
+            )
+            user = get_current_user()
+            if user is not None and user.type == "admin":
+                return {"success": False, "data": {"message": f"Piston returned {r.status_code}: {body}"}}
             return {"success": False, "data": {"message": "Non 200 code returned. Talk to an admin."}}
 
 
