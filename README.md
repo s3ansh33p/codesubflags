@@ -13,6 +13,14 @@ Uses [Piston](https://github.com/engineer-man/piston) for sandboxing and executi
    volumes:
      - ./CTFd/plugins/codesubflags/challenge_files:/opt/CTFd/CTFd/plugins/codesubflags/challenge_files
    ```
+
+   The CTFd container runs as UID 1001 (`ctfd` user). The host folder must be
+   writable by that UID or admin uploads/mkdir will fail with `Permission
+   denied`. From the repo root:
+
+   ```bash
+   sudo chown -R 1001:1001 CTFd/plugins/codesubflags/challenge_files
+   ```
 3. Install [Piston](https://github.com/engineer-man/piston).
 4. Start container with `docker compose up -d api`
 5. Restart your CTFd instance to load the plugin, e.g. `docker compose down` && `docker compose up -d`
