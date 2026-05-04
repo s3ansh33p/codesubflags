@@ -381,10 +381,14 @@
     }
 
     function uploadFile(file, overwrite) {
+        var nonce = (window.CTFd && CTFd.config && CTFd.config.csrfNonce) || "";
         var fd = new FormData();
         fd.append("path", currentPath);
         fd.append("file", file);
         fd.append("overwrite", overwrite ? "true" : "false");
+        // CTFd's CSRF middleware checks the CSRF-Token header for JSON
+        // requests but a `nonce` form field for everything else.
+        fd.append("nonce", nonce);
         setStatus("Uploading " + file.name + "…", "info");
         // Bypass CTFd.fetch — it force-sets Content-Type: application/json,
         // which clobbers the multipart boundary the browser would otherwise
@@ -394,7 +398,7 @@
             credentials: "same-origin",
             headers: {
                 "Accept": "application/json",
-                "CSRF-Token": (window.CTFd && CTFd.config && CTFd.config.csrfNonce) || "",
+                "CSRF-Token": nonce,
             },
             body: fd,
         })
