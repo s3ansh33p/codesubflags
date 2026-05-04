@@ -386,8 +386,16 @@
         fd.append("file", file);
         fd.append("overwrite", overwrite ? "true" : "false");
         setStatus("Uploading " + file.name + "…", "info");
-        CTFd.fetch("/api/v1/codesubflags/files/upload", {
+        // Bypass CTFd.fetch — it force-sets Content-Type: application/json,
+        // which clobbers the multipart boundary the browser would otherwise
+        // attach to a FormData body and leaves the server unable to parse it.
+        window.fetch("/api/v1/codesubflags/files/upload", {
             method: "POST",
+            credentials: "same-origin",
+            headers: {
+                "Accept": "application/json",
+                "CSRF-Token": (window.CTFd && CTFd.config && CTFd.config.csrfNonce) || "",
+            },
             body: fd,
         })
             .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); })
